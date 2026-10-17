@@ -73,7 +73,10 @@ class ClaudeRuntimeBridge(
 ) : RuntimeBridge {
     private val installer by lazy { RuntimeInstaller(context) }
     private val checkpoints by lazy { WorkspaceCheckpoints(context.filesDir, context) }
-    private val eventBus = MutableSharedFlow<RuntimeEvent>(extraBufferCapacity = 64)
+    private val eventBus = MutableSharedFlow<RuntimeEvent>(
+        extraBufferCapacity = 256,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
     override val events: Flow<RuntimeEvent> = eventBus
     private val pending = ConcurrentHashMap<String, PendingPermission>()
     private val toolNames = ConcurrentHashMap<String, String>()
