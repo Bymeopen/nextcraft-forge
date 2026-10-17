@@ -1859,11 +1859,9 @@ printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"
         stateFile.writeText(state.toString())
     }
 
+    // Only auto-allow read-only tools. Bash/Edit/Write/NotebookEdit go through the
+    // PermissionRequest hook so the app can classify and gate each command.
     private fun claudeWorkspaceToolRules() = JSONArray().apply {
-        put("Bash")
-        put("Edit")
-        put("Write")
-        put("NotebookEdit")
         put("Read")
         put("Glob")
         put("Grep")
