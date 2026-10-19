@@ -3,8 +3,16 @@
 package com.nextcraft.forge.ui
 
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import com.nextcraft.forge.model.ChatAttachment
+import java.io.File
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -141,6 +149,31 @@ fun AgentScreen(
             onClearChat = viewModel::clearActiveChat,
         )
 
+        if (state.agentKind == AgentKind.DEEPSEEK_HARNESS || state.agentKind == AgentKind.ANTIGRAVITY) {
+            // These agents have no approval hook wired: every tool call runs as root inside the chroot unprompted.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.errorContainer)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = stringResource(R.string.agent_full_access_warning, state.agentKind.displayTitle()),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+
         if (state.agentKind == AgentKind.ANTIGRAVITY &&
             agyAuthState.status != AntigravityAuthStatus.SIGNED_IN &&
             !hasAgyCredential
@@ -226,6 +259,7 @@ fun AgentScreen(
                             viewModel.runTerminalCommand(cmd)
                             viewModel.selectTab(ForgeTab.TERMINAL)
                         },
+                        attachmentFile = viewModel::attachmentFile,
                     )
                 }
             }
@@ -233,7 +267,33 @@ fun AgentScreen(
 
         // Linear-style composer: one rounded surface with the input, a provider chip and a round send/stop button.
         val running = state.sessionRunning
-        val canSend = promptInput.isNotBlank()
+        val canSend = promptInput.isNotBlank() || state.pendingAttachments.isNotEmpty()
+        val attachLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            if (uris.isNotEmpty()) viewModel.attachFiles(uris)
+        }
+        if (state.pendingAttachments.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                state.pendingAttachments.forEach { attachment ->
+                    AssistChip(
+                        onClick = { viewModel.removePendingAttachment(attachment.id) },
+                        label = { Text(attachment.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        trailingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = stringResource(R.string.agent_attachment_remove),
+                                modifier = Modifier.size(14.dp),
+                            )
+                        },
+                    )
+                }
+            }
+        }
         Surface(
             shape = RoundedCornerShape(20.dp),
             color = tokens.cardContainerColor,
@@ -282,6 +342,17 @@ fun AgentScreen(
                         shape = RoundedCornerShape(100),
                     )
                     Spacer(modifier = Modifier.weight(1f))
+                    IconButton(
+                        onClick = { attachLauncher.launch(arrayOf("image/*", "text/*", "application/json", "application/pdf")) },
+                        enabled = !running,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = stringResource(R.string.agent_attach),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
                     Box(
                         modifier = Modifier
                             .size(38.dp)
@@ -302,7 +373,7 @@ fun AgentScreen(
                                     viewModel.stopActiveTask()
                                 } else {
                                     val text = promptInput.trim()
-                                    if (text.isNotEmpty()) {
+                                    if (text.isNotEmpty() || state.pendingAttachments.isNotEmpty()) {
                                         promptInput = ""
                                         viewModel.sendPrompt(text)
                                     }
@@ -652,6 +723,7 @@ private fun ChatMessageCard(
     message: ChatMessage,
     agentName: String,
     onRunSnippet: (String) -> Unit,
+    attachmentFile: (ChatAttachment) -> File? = { null },
 ) {
     var expandTools by remember { mutableStateOf(false) }
     val tokens = LocalForgeThemeTokens.current
@@ -708,6 +780,10 @@ private fun ChatMessageCard(
                 ToolActivityList(items = message.workItems)
             }
 
+            if (message.attachments.isNotEmpty()) {
+                AttachmentStrip(attachments = message.attachments, attachmentFile = attachmentFile)
+            }
+
             if (message.text.isNotBlank()) {
                 MarkdownText(
                     markdown = message.text,
@@ -719,6 +795,56 @@ private fun ChatMessageCard(
                     text = stringResource(R.string.agent_thinking),
                     style = MaterialTheme.typography.bodySmall,
                     color = scheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** Chips for every attachment; images get a small decoded thumbnail, other types a name chip. */
+@Composable
+private fun AttachmentStrip(
+    attachments: List<ChatAttachment>,
+    attachmentFile: (ChatAttachment) -> File?,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        attachments.forEach { attachment ->
+            val isImage = attachment.mimeType.startsWith("image/")
+            val thumbnail by produceState<android.graphics.Bitmap?>(initialValue = null, attachment.id) {
+                value = if (!isImage) {
+                    null
+                } else {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching {
+                            val file = attachmentFile(attachment)?.takeIf { it.isFile } ?: return@runCatching null
+                            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            BitmapFactory.decodeFile(file.absolutePath, bounds)
+                            val sample = maxOf(1, maxOf(bounds.outWidth, bounds.outHeight) / 256)
+                            BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
+                        }.getOrNull()
+                    }
+                }
+            }
+            val bitmap = thumbnail
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = attachment.displayName,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(72.dp)
+                        .clip(RoundedCornerShape(10.dp)),
+                )
+            } else {
+                AssistChip(
+                    onClick = {},
+                    enabled = false,
+                    label = { Text(attachment.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 )
             }
         }

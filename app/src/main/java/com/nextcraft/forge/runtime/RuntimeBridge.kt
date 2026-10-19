@@ -25,26 +25,46 @@ data class RuntimeLaunchConfig(
  * coding agent session in ClaudeRuntimeBridge, AntigravityRuntimeBridge, or DshRuntimeBridge.
  */
 object RuntimeTaskController {
-    @Volatile
-    var stopAction: (() -> Unit)? = null
+    private const val GLOBAL_KEY = "__global__"
+    private val actions = LinkedHashMap<String, () -> Unit>()
+
+    /** Legacy single hook (Android builds); agent sessions register per session id instead. */
+    var stopAction: (() -> Unit)?
+        get() = synchronized(this) { actions[GLOBAL_KEY] }
+        set(value) = synchronized(this) { if (value == null) actions.remove(GLOBAL_KEY) else actions[GLOBAL_KEY] = value }
 
     @Synchronized
-    fun stopCurrentTask() {
-        val action = stopAction
-        stopAction = null
-        action?.invoke()
+    fun register(sessionId: String, action: () -> Unit) {
+        actions[sessionId] = action
     }
 
-    /** Clears [action] only if it is still the registered one, so a finishing task cannot drop another task's stop hook. */
+    @Synchronized
+    fun release(sessionId: String) {
+        actions.remove(sessionId)
+    }
+
+    /** Clears [action] wherever it is registered, so a finishing task cannot drop another task's stop hook. */
     @Synchronized
     fun release(action: (() -> Unit)?) {
-        if (action != null && stopAction === action) stopAction = null
+        if (action != null) actions.entries.removeIf { it.value === action }
     }
 
     @Synchronized
-    fun requestStop() {
-        stopCurrentTask()
+    fun requestStop(sessionId: String) {
+        actions.remove(sessionId)?.invoke()
     }
+
+    fun requestStopAll() {
+        val snapshot = synchronized(this) { actions.values.toList().also { actions.clear() } }
+        snapshot.forEach { runCatching(it) }
+    }
+
+    fun stopCurrentTask() = requestStopAll()
+
+    fun requestStop() = requestStopAll()
+
+    @Synchronized
+    fun hasActiveTask(): Boolean = actions.isNotEmpty()
 }
 
 /**
@@ -58,8 +78,12 @@ object RuntimeExecutionServiceContract {
     const val ACTION_COMPLETE = "com.nextcraft.forge.runtime.action.COMPLETE"
     const val ACTION_FAILED = "com.nextcraft.forge.runtime.action.FAILED"
     const val ACTION_CANCELLED = "com.nextcraft.forge.runtime.action.CANCELLED"
+    const val ACTION_SHOW_APPROVAL = "com.nextcraft.forge.runtime.action.SHOW_APPROVAL"
+    const val ACTION_CANCEL_APPROVAL = "com.nextcraft.forge.runtime.action.CANCEL_APPROVAL"
     const val EXTRA_PROJECT_NAME = "com.nextcraft.forge.runtime.extra.PROJECT_NAME"
     const val EXTRA_DETAIL = "com.nextcraft.forge.runtime.extra.DETAIL"
+    const val EXTRA_APPROVAL_ID = "com.nextcraft.forge.runtime.extra.APPROVAL_ID"
+    const val EXTRA_TOOL_NAME = "com.nextcraft.forge.runtime.extra.TOOL_NAME"
 
     private fun resolveServiceClass(): Class<*>? =
         runCatching { Class.forName(SERVICE_CLASS_NAME) }.getOrNull()
@@ -103,6 +127,31 @@ object RuntimeExecutionServiceContract {
         }
     }
 
+    /** Posts an Approve/Deny notification for a pending high-risk tool request registered in [ApprovalRelay]. */
+    fun showApproval(context: Context, approvalId: String, toolName: String, explanation: String) {
+        val cls = resolveServiceClass() ?: return
+        runCatching {
+            context.startService(
+                Intent(context, cls)
+                    .setAction(ACTION_SHOW_APPROVAL)
+                    .putExtra(EXTRA_APPROVAL_ID, approvalId)
+                    .putExtra(EXTRA_TOOL_NAME, toolName)
+                    .putExtra(EXTRA_DETAIL, explanation),
+            )
+        }
+    }
+
+    fun cancelApproval(context: Context, approvalId: String) {
+        val cls = resolveServiceClass() ?: return
+        runCatching {
+            context.startService(
+                Intent(context, cls)
+                    .setAction(ACTION_CANCEL_APPROVAL)
+                    .putExtra(EXTRA_APPROVAL_ID, approvalId),
+            )
+        }
+    }
+
     fun cancelForeground(context: Context) {
         val cls = resolveServiceClass() ?: return
         runCatching {
@@ -122,6 +171,7 @@ interface RuntimeBridge {
         prompt: String,
         conversationHistory: List<ChatMessage>,
         provider: ProviderProfile,
+        resumeSessionId: String? = null,
     ): String
     suspend fun respondToApproval(request: ToolRequest, approved: Boolean)
     suspend fun stopSession(sessionId: String)
@@ -136,16 +186,43 @@ interface RuntimeBridge {
 /** Keeps recent context while preventing an old chat from becoming an unbounded prompt allocation. */
 internal fun List<ChatMessage>.recentWithinCharacterBudget(maxCharacters: Int): List<ChatMessage> {
     if (maxCharacters <= 0 || isEmpty()) return emptyList()
-    var remaining = maxCharacters
+    val total = sumOf { it.text.length }
+    if (total <= maxCharacters) return this
+    // Oversized history: keep the recent tail and summarize what was cut instead of dropping it silently.
+    var remaining = (maxCharacters - HISTORY_DIGEST_RESERVE).coerceAtLeast(1)
     val selected = ArrayDeque<ChatMessage>()
+    var kept = 0
     for (message in asReversed()) {
         if (remaining <= 0) break
         val text = if (message.text.length <= remaining) message.text else message.text.takeLast(remaining)
         selected.addFirst(message.copy(text = text))
         remaining -= text.length
+        kept++
         if (text.length < message.text.length) break
     }
+    val omitted = take(size - kept)
+    if (omitted.isEmpty()) return selected.toList()
+    selected.addFirst(ChatMessage(fromUser = false, text = historyDigest(omitted)))
     return selected.toList()
+}
+
+private const val HISTORY_DIGEST_RESERVE = 2_200
+private const val HISTORY_DIGEST_MAX_CHARS = 2_000
+private const val HISTORY_DIGEST_ITEM_CHARS = 120
+
+/** Deterministic, LLM-free digest: the opening of each omitted user message, oldest first. */
+internal fun historyDigest(omitted: List<ChatMessage>): String {
+    val header = "Earlier in this conversation (${omitted.size} messages omitted): "
+    val items = StringBuilder()
+    for (message in omitted) {
+        if (!message.fromUser) continue
+        val line = message.text.replace(Regex("\\s+"), " ").trim().take(HISTORY_DIGEST_ITEM_CHARS)
+        if (line.isEmpty()) continue
+        val piece = "- $line\n"
+        if (items.length + piece.length > HISTORY_DIGEST_MAX_CHARS) break
+        items.append(piece)
+    }
+    return header + "\n" + items.toString().trimEnd()
 }
 
 /**

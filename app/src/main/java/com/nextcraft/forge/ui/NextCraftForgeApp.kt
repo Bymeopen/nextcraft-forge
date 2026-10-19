@@ -191,6 +191,8 @@ fun NextCraftForgeApp(viewModel: MainViewModel) {
                             viewModel.createQuickProject()
                             viewModel.selectTab(ForgeTab.AGENT)
                         },
+                        onExportProject = viewModel::exportProjectZip,
+                        onImportProject = viewModel::importProjectZip,
                     )
                     ForgeTab.AGENT -> AgentScreen(state = state, viewModel = viewModel)
                     ForgeTab.TOOLS -> ToolsScreen(onOpen = viewModel::selectTab)
@@ -198,6 +200,12 @@ fun NextCraftForgeApp(viewModel: MainViewModel) {
                     ForgeTab.TERMINAL -> TerminalScreen(state = state, viewModel = viewModel)
                     ForgeTab.ANDROID -> AndroidBuildScreen(state = state, viewModel = viewModel)
                     ForgeTab.PREVIEW -> WebPreviewScreen(state = state, viewModel = viewModel)
+                    ForgeTab.TOOLCHAINS -> ToolchainsScreen(state = state, viewModel = viewModel)
+                    ForgeTab.DIAGNOSTICS -> DiagnosticsScreen(state = state, viewModel = viewModel)
+                    ForgeTab.CHECKPOINTS -> CheckpointsScreen(state = state, viewModel = viewModel)
+                    ForgeTab.CICD -> CicdScreen(state = state, viewModel = viewModel)
+                    ForgeTab.SSH -> SshScreen(state = state, viewModel = viewModel)
+                    ForgeTab.GIT -> GitScreen(state = state, viewModel = viewModel)
                     ForgeTab.SETTINGS -> SettingsScreenModern(state = state, viewModel = viewModel)
                 }
             }
@@ -497,6 +505,12 @@ private val toolsGroup = setOf(
     ForgeTab.FILES,
     ForgeTab.ANDROID,
     ForgeTab.PREVIEW,
+    ForgeTab.TOOLCHAINS,
+    ForgeTab.DIAGNOSTICS,
+    ForgeTab.CHECKPOINTS,
+    ForgeTab.CICD,
+    ForgeTab.SSH,
+    ForgeTab.GIT,
 )
 
 /**

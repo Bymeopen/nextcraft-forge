@@ -908,6 +908,18 @@ class RuntimeInstaller(private val context: Context) {
         onProgress(RuntimeInstallProgress("${stack.label} stack is ready", 1f))
     }
 
+    /** Installs extra Debian packages on demand (for example `openssh-client` for the SSH Manager). */
+    suspend fun installAptPackages(
+        packages: List<String>,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        val clean = packages.map(String::trim).filter { it.matches(Regex("^[a-z0-9][a-z0-9+.-]*$")) }
+        require(clean.isNotEmpty()) { "No valid package names" }
+        val runtime = installedRuntime()
+        aptInstall(runtime.chrootExec, clean, "Installing ${clean.joinToString(" ")}…", 0.2f, onProgress)
+        onProgress(RuntimeInstallProgress("Installed ${clean.joinToString(" ")}", 1f))
+    }
+
     /**
      * Removes an optional development stack without touching projects or the core
      * Node.js/Git runtime.
@@ -1334,6 +1346,26 @@ class RuntimeInstaller(private val context: Context) {
                     File(rootfs, AndroidToolchain.GRADLE_INIT_SCRIPT_GUEST_PATH.removePrefix("/")).isFile
         }
     }
+
+    /** Read-only toolchain facts for inventory screens; never runs a guest process. */
+    fun toolchainVersions(): Map<String, String?> = mapOf(
+        "node" to File(rootfs, "usr/local/lib/nodejs/bin/node").takeIf { it.exists() }?.let { NODE_VERSION },
+        "python" to listOf("usr/bin/python3.12", "usr/bin/python3.8")
+            .firstOrNull { guestExecutableOrSymlinkExists(it) }
+            ?.substringAfterLast("python"),
+        "java" to File(rootfs, AndroidToolchain.JDK_HOST_DIR).takeIf { it.isDirectory }
+            ?.let { AndroidToolchain.JDK_DIR.removePrefix("jdk-") },
+        "gradle" to File(rootfs, AndroidToolchain.GRADLE_LAUNCHER_HOST_PATH).takeIf { it.isFile }
+            ?.let { AndroidToolchain.GRADLE_VERSION },
+        "android-sdk" to File(rootfs, AndroidToolchain.ANDROID_JAR_HOST_PATH).takeIf { it.isFile }
+            ?.let { "${AndroidToolchain.PLATFORM} / build-tools ${AndroidToolchain.BUILD_TOOLS_VERSION}" },
+        "gcc" to "installed".takeIf { guestExecutableOrSymlinkExists("usr/bin/gcc") },
+        "php" to "installed".takeIf { guestExecutableOrSymlinkExists("usr/bin/php") },
+        "composer" to "installed".takeIf { File(rootfs, "usr/local/bin/composer").isFile },
+        "ssh" to "installed".takeIf { guestExecutableOrSymlinkExists("usr/bin/ssh") },
+        "git" to "installed".takeIf { guestExecutableOrSymlinkExists("usr/bin/git") },
+        "gh" to githubCliVersion.takeIf { isGitHubCliInstalled() },
+    )
 
     private fun readDevStackState(): MutableMap<String, Boolean> {
         if (!devStacksFile.isFile) return mutableMapOf()
@@ -2304,6 +2336,10 @@ printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"
                 // Stale/complete .part cannot be resumed; discard it and restart now (existing is 0 on the retry).
                 temporary.delete()
                 return downloadVerified(url, destination, expectedChecksum, algorithm, onBytes)
+            }
+            check(code != 404) {
+                "Runtime bundle not found at $url. The release that hosts this bundle may have been removed; " +
+                    "update NextCraft Forge or host the bundle yourself."
             }
             check(code in 200..299) { "Download failed with HTTP $code" }
             val resumed = code == HttpURLConnection.HTTP_PARTIAL && existing > 0L

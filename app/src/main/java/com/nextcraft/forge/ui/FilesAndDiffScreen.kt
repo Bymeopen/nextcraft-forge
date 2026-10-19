@@ -109,18 +109,29 @@ fun FilesAndDiffScreen(
                 )
             }
         }
-        val modes = listOf("files", "editor", "diff")
+        val modes = listOf("files", "editor", "diff", "search")
         ForgePillTabs(
             items = listOf(
                 stringResource(R.string.files_tab_explorer, state.workspaceFiles.size),
                 state.selectedFilePath?.substringAfterLast('/') ?: stringResource(R.string.files_tab_editor),
                 stringResource(R.string.files_tab_changes, state.changedItems.size),
+                stringResource(R.string.files_tab_search),
             ),
             selectedIndex = modes.indexOf(mode).coerceAtLeast(0),
             onSelect = { mode = modes[it] },
         )
 
         when (mode) {
+            "search" -> WorkspaceSearchPane(
+                state = state,
+                onSearch = viewModel::searchWorkspace,
+                onClear = viewModel::clearSearch,
+                onOpenHit = { path ->
+                    viewModel.openWorkspaceFile(path)
+                    mode = "editor"
+                },
+                modifier = Modifier.weight(1f),
+            )
             "files" -> WorkspaceTreeList(
                 entries = state.workspaceFiles,
                 selectedPath = state.selectedFilePath,
@@ -396,7 +407,7 @@ private fun WorkspaceFileEditor(
 }
 
 @Composable
-private fun WorkspaceDiffReviewList(
+internal fun WorkspaceDiffReviewList(
     changes: List<ChangeItem>,
     sessionRunning: Boolean,
     onOpenFile: (String) -> Unit,
@@ -555,6 +566,111 @@ private fun WorkspaceDiffReviewList(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkspaceSearchPane(
+    state: ForgeUiState,
+    onSearch: (query: String, regex: Boolean, caseSensitive: Boolean) -> Unit,
+    onClear: () -> Unit,
+    onOpenHit: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var query by rememberSaveable { mutableStateOf(state.searchQuery) }
+    var regex by rememberSaveable { mutableStateOf(false) }
+    var caseSensitive by rememberSaveable { mutableStateOf(false) }
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(modifier = modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                label = { Text(stringResource(R.string.files_search_query)) },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+            Button(
+                onClick = { onSearch(query, regex, caseSensitive) },
+                enabled = query.isNotBlank() && !state.searchBusy,
+            ) {
+                Text(stringResource(R.string.files_search_run))
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            FilterChip(
+                selected = regex,
+                onClick = { regex = !regex },
+                label = { Text(stringResource(R.string.files_search_regex)) },
+            )
+            FilterChip(
+                selected = caseSensitive,
+                onClick = { caseSensitive = !caseSensitive },
+                label = { Text(stringResource(R.string.files_search_case)) },
+            )
+            if (state.searchResults.isNotEmpty() || state.searchQuery.isNotBlank()) {
+                androidx.compose.material3.AssistChip(
+                    onClick = {
+                        query = ""
+                        onClear()
+                    },
+                    label = { Text(stringResource(R.string.files_search_clear)) },
+                )
+            }
+        }
+        if (state.searchBusy) {
+            androidx.compose.material3.LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        Text(
+            text = if (state.searchQuery.isBlank()) {
+                stringResource(R.string.files_search_hint)
+            } else {
+                stringResource(R.string.files_search_results, state.searchResults.size)
+            },
+            fontSize = 12.sp,
+            color = muted,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
+        )
+        LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+            items(state.searchResults, key = { "${it.path}:${it.line}:${it.column}" }) { hit ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(role = Role.Button) { onOpenHit(hit.path) }
+                        .padding(horizontal = 20.dp, vertical = 8.dp),
+                ) {
+                    val location = hit.path + ":" + hit.line
+                    Text(
+                        text = location,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        color = LocalForgeThemeTokens.current.accentText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = hit.lineText.trim(),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Divider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 0.5.dp, modifier = Modifier.padding(start = 20.dp))
             }
         }
     }

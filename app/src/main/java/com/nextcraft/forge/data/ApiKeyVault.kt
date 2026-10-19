@@ -87,6 +87,19 @@ class ApiKeyVault(context: Context) {
         return entry.copy(isActive = entries.size == 1)
     }
 
+    /** Every provider id that has at least one stored key (pool entries or a legacy single secret). */
+    @Synchronized
+    fun providerIds(): List<String> = preferences.all.keys
+        .mapNotNull { key ->
+            when {
+                key.endsWith(".pool") -> key.removeSuffix(".pool")
+                key.endsWith(".value") && !key.contains(".pool.") -> key.removeSuffix(".value")
+                else -> null
+            }
+        }
+        .distinct()
+        .sorted()
+
     @Synchronized
     fun list(providerId: String): List<ApiKeyInfo> {
         val entries = ensurePool(providerId)

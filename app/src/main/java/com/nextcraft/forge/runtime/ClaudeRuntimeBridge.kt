@@ -3,7 +3,6 @@ package com.nextcraft.forge.runtime
 import android.content.Context
 import android.util.Log
 import com.nextcraft.forge.model.stringOrEmpty
-import com.nextcraft.forge.model.ChangeItem
 import com.nextcraft.forge.model.ChatMessage
 import com.nextcraft.forge.model.DevStack
 import com.nextcraft.forge.model.ProjectKind
@@ -22,8 +21,6 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -87,7 +84,7 @@ internal object ProviderRuntimeErrorDetector {
 }
 
 class ClaudeRuntimeBridge(
-    private val context: Context,
+    context: Context,
     private val secretFor: (ProviderProfile) -> String?,
     private val rotateSecretFor: (ProviderProfile) -> String? = { profile ->
         com.nextcraft.forge.data.ApiKeyVault(context).rotateNext(profile.kind.name)
@@ -98,26 +95,13 @@ class ClaudeRuntimeBridge(
     private val interactiveHighRiskApprovals: () -> Boolean = {
         runCatching { com.nextcraft.forge.data.AppPreferences(context).interactiveHighRiskApprovals }.getOrDefault(true)
     },
-) : RuntimeBridge {
+) : AgentBridgeBase(context, "ClaudeBridge", "Claude Code") {
     private val installer by lazy { RuntimeInstaller(context) }
-    private val checkpoints by lazy { WorkspaceCheckpoints(context.filesDir, context) }
-    private val eventBus = MutableSharedFlow<RuntimeEvent>(
-        extraBufferCapacity = 1024,
-        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.SUSPEND,
-    )
-    override val events: Flow<RuntimeEvent> = eventBus
     private val pending = ConcurrentHashMap<String, PendingPermission>()
     private val toolNames = ConcurrentHashMap<String, String>()
     private val seenToolCalls = ConcurrentHashMap.newKeySet<String>()
-    private val finishedSessions = ConcurrentHashMap.newKeySet<String>()
-    @Volatile private var activeProcess: Process? = null
-    @Volatile private var activeSessionId: String? = null
-    @Volatile private var userStopRequested: Boolean = false
     @Volatile private var turnCompletedFromStream: Boolean = false
-    @Volatile private var activeProjectSlug: String? = null
-    @Volatile private var taskStartedAtElapsedRealtime: Long = 0L
-    @Volatile private var lastForegroundProgressAt: Long = 0L
-    @Volatile private var foregroundResultPosted: Boolean = false
+    @Volatile private var sawAssistantOutput: Boolean = false
     private val streamedText = StringBuilder()
     private val streamedThinking = StringBuilder()
     private var lastReasoningTokens = 0
@@ -132,16 +116,12 @@ class ClaudeRuntimeBridge(
         prompt: String,
         conversationHistory: List<ChatMessage>,
         provider: ProviderProfile,
+        resumeSessionId: String?,
     ): String = withContext(Dispatchers.IO + NonCancellable) {
         val sessionId = UUID.randomUUID().toString()
-        finishedSessions.remove(sessionId)
-        activeSessionId = sessionId
-        userStopRequested = false
+        beginSession(sessionId, projectSlug)
         turnCompletedFromStream = false
-        activeProjectSlug = projectSlug
-        taskStartedAtElapsedRealtime = android.os.SystemClock.elapsedRealtime()
-        lastForegroundProgressAt = 0L
-        foregroundResultPosted = false
+        sawAssistantOutput = false
         toolNames.clear()
         seenToolCalls.clear()
         lastReasoningTokens = 0
@@ -167,27 +147,15 @@ class ClaudeRuntimeBridge(
         var formatGateway: LocalFormatGateway? = null
         var openRouterGateway: OpenRouterRoutingGateway? = null
         var spawnedOutputFile: File? = null
-        var stopHandler: (() -> Unit)? = null
+        val resuming = !resumeSessionId.isNullOrBlank()
         runCatching {
-            stopHandler = {
-                userStopRequested = true
-                val running = activeProcess
-                if (running != null) {
-                    Thread({
-                        runCatching {
-                            running.destroy()
-                            Thread.sleep(500)
-                            if (running.isAlive) running.destroyForcibly()
-                        }
-                    }, "forge-claude-stop").apply { isDaemon = true }.start()
-                }
-            }
-            RuntimeTaskController.stopAction = stopHandler
+            installStopHandler(sessionId)
             startForegroundRuntime(projectSlug)
             val installed = installer.installedRuntime()
             installer.ensureSettingsAndHooks()
             val workspace = checkpoints.ensureWorkspace(projectId)
             checkpoints.createCheckpoint(projectId, workspace)
+            runCatching { history.snapshot(projectId, workspace, "Before Claude Code turn") }
             val before = checkpoints.snapshot(workspace)
             formatGateway = if (provider.kind.protocol in setOf(
                     ProviderProtocol.OPENAI_CHAT,
@@ -206,7 +174,8 @@ class ClaudeRuntimeBridge(
             Log.d("ClaudeBridge", "Launch environment keys: ${launch.environment.keys}")
 
             val guestWorkspacePath = "/workspace/$projectSlug"
-            val contextPrompt = buildContextPrompt(prompt, conversationHistory, guestWorkspacePath, projectKind)
+            // A resumed Claude session already holds the conversation; only the new prompt is sent.
+            val contextPrompt = if (resuming) prompt else buildContextPrompt(prompt, conversationHistory, guestWorkspacePath, projectKind)
 
             val command = buildList {
                 add(launch.executable)
@@ -223,6 +192,10 @@ class ClaudeRuntimeBridge(
                 add(launch.environment["ANTHROPIC_MODEL"] ?: provider.model)
                 add("--max-turns")
                 add("25")
+                if (resuming) {
+                    add("--resume")
+                    add(resumeSessionId!!)
+                }
             }
             Log.d("ClaudeBridge", "Launching Claude Code (${command.size} args, prompt=${contextPrompt.length} chars)")
             val process = installer.process(
@@ -272,18 +245,10 @@ class ClaudeRuntimeBridge(
                 val exit = process.waitFor()
                 Log.d("ClaudeBridge", "Process exited with code $exit")
                 permissionWatcher.cancelAndJoin()
-                pending.values.filter { it.request.sessionId == sessionId }.forEach { permission ->
-                    permission.response.writeText("deny")
-                    pending.remove(permission.request.approvalId)
-                }
-                val changed = checkpoints.changedFiles(workspace, before)
-                if (changed.isNotEmpty()) {
-                    Log.d("ClaudeBridge", "Changed files (${changed.size})")
-                    checkpoints.saveChangedPaths(projectId, changed)
-                    val details = loadPendingChanges(projectId)
-                    eventBus.emit(RuntimeEvent.FilesChanged(sessionId, details))
-                } else if (checkpoints.readChangedPaths(projectId).isEmpty()) {
-                    acceptLastChanges(projectId)
+                dropPendingPermissions(sessionId, emitRejected = false)
+                publishWorkspaceChanges(sessionId, projectId, workspace, before)
+                if (resuming && exit != 0 && !sawAssistantOutput && !turnCompletedFromStream && !userStopRequested) {
+                    throw ProviderSessionException("resume_unavailable: " + lastDiagnostic.ifBlank { "Claude Code could not resume the saved session" })
                 }
                 if (exit == 0 || (turnCompletedFromStream && !userStopRequested)) {
                     emitCompletedOnce(sessionId)
@@ -300,12 +265,8 @@ class ClaudeRuntimeBridge(
         }.onFailure { error ->
             Log.e("ClaudeBridge", "Session failed: ${error::class.simpleName}")
             // A failure after launch (parser/IO/provider error) must not leave the agent running unattended in the chroot.
-            activeProcess?.let { running -> runCatching { if (running.isAlive) running.destroyForcibly() } }
-            pending.values.filter { it.request.sessionId == sessionId }.forEach { permission ->
-                runCatching { permission.response.writeText("deny") }
-                pending.remove(permission.request.approvalId)
-                eventBus.emit(RuntimeEvent.ToolRejected(sessionId, permission.request.approvalId))
-            }
+            killActiveProcessNow()
+            dropPendingPermissions(sessionId, emitRejected = true)
             val message = friendlyError(error)
             emitFailureOnce(sessionId, message)
             if (userStopRequested) {
@@ -321,10 +282,20 @@ class ClaudeRuntimeBridge(
         runCatching { formatGateway?.close() }
         runCatching { openRouterGateway?.close() }
         runCatching { spawnedOutputFile?.delete() }
-        activeProcess = null
-        activeSessionId = null
-        RuntimeTaskController.release(stopHandler)
+        ApprovalRelay.clear(sessionId)
+        endSession(sessionId)
         sessionId
+    }
+
+    /** Denies and forgets every request still waiting for this session (process gone or session failed). */
+    private suspend fun dropPendingPermissions(sessionId: String, emitRejected: Boolean) {
+        pending.values.filter { it.request.sessionId == sessionId }.forEach { permission ->
+            runCatching { permission.response.writeText("deny") }
+            pending.remove(permission.request.approvalId)
+            ApprovalRelay.unregister(permission.request.approvalId)
+            RuntimeExecutionServiceContract.cancelApproval(context, permission.request.approvalId)
+            if (emitRejected) eventBus.emit(RuntimeEvent.ToolRejected(sessionId, permission.request.approvalId))
+        }
     }
 
     /**
@@ -385,52 +356,13 @@ class ClaudeRuntimeBridge(
 
     override suspend fun respondToApproval(request: ToolRequest, approved: Boolean) = withContext(Dispatchers.IO) {
         val permission = pending.remove(request.approvalId) ?: return@withContext
+        ApprovalRelay.unregister(request.approvalId)
+        RuntimeExecutionServiceContract.cancelApproval(context, request.approvalId)
         permission.response.writeText(if (approved) "allow" else "deny")
         eventBus.emit(
             if (approved) RuntimeEvent.ToolApproved(request.sessionId, request.approvalId)
             else RuntimeEvent.ToolRejected(request.sessionId, request.approvalId),
         )
-    }
-
-    override suspend fun stopSession(sessionId: String) = withContext(Dispatchers.IO) {
-        if (activeSessionId == sessionId) {
-            userStopRequested = true
-            activeProcess?.destroy()
-            delay(500)
-            if (activeProcess?.isAlive == true) activeProcess?.destroyForcibly()
-            emitFailureOnce(sessionId, "Stopped by user")
-        }
-    }
-
-    override suspend fun stopActiveSession() {
-        activeSessionId?.let { stopSession(it) }
-    }
-
-    override suspend fun undoLastChanges(projectId: String): Boolean = withContext(Dispatchers.IO) {
-        val workspace = checkpoints.ensureWorkspace(projectId)
-        checkpoints.revertLatestTurn(projectId, workspace).isNotEmpty()
-    }
-
-    override suspend fun acceptLastChanges(projectId: String) {
-        withContext(Dispatchers.IO) {
-            checkpoints.acceptAll(projectId)
-        }
-    }
-
-    override suspend fun loadPendingChanges(projectId: String): List<ChangeItem> = withContext(Dispatchers.IO) {
-        val workspace = checkpoints.ensureWorkspace(projectId)
-        val paths = checkpoints.readChangedPaths(projectId).filterNot(checkpoints::isInternalRuntimePath)
-        if (paths.isEmpty()) emptyList() else checkpoints.buildChangeDetails(projectId, workspace, paths)
-    }
-
-    override suspend fun undoFileChange(projectId: String, path: String): Boolean = withContext(Dispatchers.IO) {
-        val workspace = checkpoints.ensureWorkspace(projectId)
-        checkpoints.revertFile(projectId, workspace, path)
-    }
-
-    override suspend fun acceptFileChange(projectId: String, path: String): Boolean = withContext(Dispatchers.IO) {
-        val workspace = checkpoints.ensureWorkspace(projectId)
-        checkpoints.acceptFile(projectId, workspace, path)
     }
 
     private suspend fun watchPermissionRequests(sessionId: String) {
@@ -473,6 +405,8 @@ class ClaudeRuntimeBridge(
             .forEach { expired ->
                 if (pending.remove(expired.request.approvalId, expired)) {
                     runCatching { expired.response.writeText("deny") }
+                    ApprovalRelay.unregister(expired.request.approvalId)
+                    RuntimeExecutionServiceContract.cancelApproval(context, expired.request.approvalId)
                     eventBus.emit(RuntimeEvent.ToolRejected(sessionId, expired.request.approvalId))
                 }
             }
@@ -507,6 +441,8 @@ class ClaudeRuntimeBridge(
                     pending[approvalId] = PendingPermission(toolRequest, response)
                     runCatching { file.delete() }
                     Log.i("ClaudeBridge", "Requesting interactive user approval $approvalId for high-risk $toolName ($paths)")
+                    ApprovalRelay.register(sessionId, approvalId) { approved -> respondToApproval(toolRequest, approved) }
+                    RuntimeExecutionServiceContract.showApproval(context, approvalId, toolName, toolRequest.explanation)
                     eventBus.emit(RuntimeEvent.ToolRequested(sessionId, toolRequest))
                 } else {
                     Log.w("ClaudeBridge", "Denied high-risk permission request $approvalId for $toolName ($paths)")
@@ -542,7 +478,9 @@ class ClaudeRuntimeBridge(
         when (json.stringOrEmpty("type")) {
             "stream_event" -> json.optJSONObject("event")?.let { consumeClaudeJsonEvent(sessionId, it) }
             "system" -> when (json.stringOrEmpty("subtype")) {
-                "init" -> Unit
+                "init" -> json.stringOrEmpty("session_id").takeIf(String::isNotBlank)?.let { agentSessionId ->
+                    eventBus.emit(RuntimeEvent.SessionIdentified(sessionId, agentSessionId))
+                }
                 "thinking_tokens" -> emitReasoningProgress(sessionId, json.optInt("estimated_tokens"))
                 "permission_denied" -> eventBus.emit(
                     RuntimeEvent.RuntimeLog(
@@ -576,6 +514,7 @@ class ClaudeRuntimeBridge(
                     }
                     "text_delta", "" -> delta.stringOrEmpty("text").takeIf(String::isNotEmpty)?.let {
                         streamedText.append(it)
+                        sawAssistantOutput = true
                         eventBus.emit(RuntimeEvent.AssistantDelta(sessionId, it))
                     }
                 }
@@ -593,6 +532,7 @@ class ClaudeRuntimeBridge(
                     when (block.stringOrEmpty("type")) {
                         "text" -> if (streamedText.isEmpty()) {
                             block.stringOrEmpty("text").takeIf(String::isNotBlank)?.let {
+                                sawAssistantOutput = true
                                 eventBus.emit(RuntimeEvent.AssistantDelta(sessionId, it))
                             }
                         }
@@ -610,7 +550,10 @@ class ClaudeRuntimeBridge(
                                 )
                             }
                         }
-                        "tool_use" -> emitToolStarted(sessionId, block)
+                        "tool_use" -> {
+                            sawAssistantOutput = true
+                            emitToolStarted(sessionId, block)
+                        }
                     }
                 }
                 streamedText.clear()
@@ -717,32 +660,6 @@ class ClaudeRuntimeBridge(
     @Suppress("UNUSED_PARAMETER")
     private fun terminalStatus(line: String): Pair<String, String>? = null
 
-    private suspend fun emitCompletedOnce(sessionId: String) {
-        if (finishedSessions.add(sessionId)) {
-            eventBus.emit(RuntimeEvent.SessionCompleted(sessionId))
-            finishForegroundRuntime(
-                completed = true,
-                projectName = activeProjectSlug ?: "Project",
-                detail = "Claude Code finished",
-            )
-        }
-    }
-
-    private suspend fun emitFailureOnce(sessionId: String, reason: String) {
-        if (finishedSessions.add(sessionId)) {
-            eventBus.emit(RuntimeEvent.SessionFailed(sessionId, reason))
-            if (userStopRequested) {
-                cancelForegroundRuntime()
-            } else {
-                finishForegroundRuntime(
-                    completed = false,
-                    projectName = activeProjectSlug ?: "Project",
-                    detail = reason,
-                )
-            }
-        }
-    }
-
     private fun sanitizeForDisplay(value: String): String {
         return value
             .replace(Regex("sk-[A-Za-z0-9_-]{8,}"), "sk-••••")
@@ -812,10 +729,6 @@ class ClaudeRuntimeBridge(
         return sb.toString()
     }
 
-    fun configureProjectRoot(projectId: String, rootPath: String) {
-        checkpoints.configureProjectRoot(projectId, rootPath)
-    }
-
     private fun classifyRisk(tool: String, command: String?, paths: List<String>): RiskLevel =
         classifyToolRisk(tool, command, paths)
 
@@ -831,25 +744,6 @@ class ClaudeRuntimeBridge(
         }
     }
 
-    private fun pushForegroundProgress(detailRaw: String) {
-        if (activeSessionId == null) return
-        val now = android.os.SystemClock.elapsedRealtime()
-        if (now - lastForegroundProgressAt < FOREGROUND_PROGRESS_MIN_INTERVAL_MS) return
-        lastForegroundProgressAt = now
-        val detail = detailRaw.replace(Regex("\\s+"), " ").trim().take(110)
-        val elapsedMs = taskStartedAtElapsedRealtime.takeIf { it > 0 }?.let { now - it } ?: 0L
-        val text = if (elapsedMs > 0L) "$detail · ${formatElapsedShort(elapsedMs)}" else detail
-        RuntimeExecutionServiceContract.pushProgress(context, activeProjectSlug, text)
-    }
-
-    private fun formatElapsedShort(milliseconds: Long): String {
-        val totalSeconds = milliseconds / 1_000L
-        val hours = totalSeconds / 3_600L
-        val minutes = (totalSeconds % 3_600L) / 60L
-        val seconds = totalSeconds % 60L
-        return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds) else "%d:%02d".format(minutes, seconds)
-    }
-
     private fun terminateActiveProcessGracefully() {
         val running = activeProcess ?: return
         Thread {
@@ -862,22 +756,6 @@ class ClaudeRuntimeBridge(
         }.apply { isDaemon = true }.start()
     }
 
-    private fun startForegroundRuntime(projectName: String) {
-        RuntimeExecutionServiceContract.startForeground(context, projectName)
-    }
-
-    private fun finishForegroundRuntime(completed: Boolean, projectName: String, detail: String) {
-        if (foregroundResultPosted) return
-        foregroundResultPosted = true
-        RuntimeExecutionServiceContract.finishForeground(context, completed, projectName, detail, "ClaudeBridge")
-    }
-
-    private fun cancelForegroundRuntime() {
-        if (foregroundResultPosted) return
-        foregroundResultPosted = true
-        RuntimeExecutionServiceContract.cancelForeground(context)
-    }
-
     private data class PendingPermission(
         val request: ToolRequest,
         val response: File,
@@ -886,7 +764,6 @@ class ClaudeRuntimeBridge(
     private class ProviderSessionException(message: String) : IllegalStateException(message)
 
     companion object {
-        private const val FOREGROUND_PROGRESS_MIN_INTERVAL_MS = 750L
         private const val HIGH_RISK_APPROVAL_TIMEOUT_MS = 40_000L
         private const val STALE_RESPONSE_MS = 600_000L
         private const val MAX_CONVERSATION_HISTORY_CHARACTERS = 160_000

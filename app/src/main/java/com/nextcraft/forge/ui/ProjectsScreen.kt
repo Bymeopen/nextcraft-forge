@@ -21,8 +21,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.Divider
 import androidx.compose.material3.DropdownMenu
@@ -66,16 +71,27 @@ fun ProjectsScreen(
     onNewProject: () -> Unit,
     onDeleteProject: (String) -> Unit,
     onNewQuickProject: () -> Unit = {},
+    onExportProject: (projectId: String, target: Uri) -> Unit = { _, _ -> },
+    onImportProject: (source: Uri) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    var exportingProject by remember { mutableStateOf<Project?>(null) }
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        val target = exportingProject
+        exportingProject = null
+        if (uri != null && target != null) onExportProject(target.id, uri)
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) onImportProject(uri)
+    }
     val regular = state.projects
         .filter { it.kind == ProjectKind.PROJECT }
         .sortedByDescending { it.updatedAtMillis }
     val quick = state.projects
         .filter { it.kind == ProjectKind.QUICK_PROJECT }
         .sortedByDescending { it.updatedAtMillis }
-    val busy = state.sessionRunning ||
-        state.androidBuild.phase == com.nextcraft.forge.runtime.AndroidBuildPhase.BUILDING ||
+    // Agent sessions are per project; only the single build/terminal instance locks switching.
+    val busy = state.androidBuild.phase == com.nextcraft.forge.runtime.AndroidBuildPhase.BUILDING ||
         state.terminalRunning
     // Mirrors MainViewModel.deleteProject, which refuses to delete the last project or while tasks run.
     val canDelete = state.projects.size > 1 && !busy
@@ -85,6 +101,7 @@ fun ProjectsScreen(
         ProjectsHeader(
             onNewProject = onNewProject,
             onNewQuickProject = onNewQuickProject,
+            onImportProject = { importLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed")) },
         )
         Divider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 0.5.dp)
 
@@ -98,11 +115,16 @@ fun ProjectsScreen(
                         ProjectRow(
                             project = project,
                             active = project.id == state.activeProjectId,
-                            // MainViewModel.selectProject ignores switches while active tasks run.
+                            running = project.id in state.runningProjectIds,
+                            // MainViewModel.selectProject ignores switches while a build or terminal command runs.
                             locked = busy && project.id != state.activeProjectId,
-                            canDelete = canDelete,
+                            canDelete = canDelete && project.id !in state.runningProjectIds,
                             onOpen = { onOpenProject(project.id) },
                             onDelete = { pendingDeleteProject = project },
+                            onExport = {
+                                exportingProject = project
+                                exportLauncher.launch("${project.slug}.zip")
+                            },
                         )
                     }
                 }
@@ -112,11 +134,16 @@ fun ProjectsScreen(
                         ProjectRow(
                             project = project,
                             active = project.id == state.activeProjectId,
-                            // MainViewModel.selectProject ignores switches while active tasks run.
+                            running = project.id in state.runningProjectIds,
+                            // MainViewModel.selectProject ignores switches while a build or terminal command runs.
                             locked = busy && project.id != state.activeProjectId,
-                            canDelete = canDelete,
+                            canDelete = canDelete && project.id !in state.runningProjectIds,
                             onOpen = { onOpenProject(project.id) },
                             onDelete = { pendingDeleteProject = project },
+                            onExport = {
+                                exportingProject = project
+                                exportLauncher.launch("${project.slug}.zip")
+                            },
                         )
                     }
                 }
@@ -152,6 +179,7 @@ fun ProjectsScreen(
 private fun ProjectsHeader(
     onNewProject: () -> Unit,
     onNewQuickProject: () -> Unit,
+    onImportProject: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -168,6 +196,14 @@ private fun ProjectsHeader(
         )
         androidx.compose.material3.TextButton(onClick = onNewQuickProject) {
             Text(stringResource(R.string.projects_new_quick_chat), fontSize = 12.sp)
+        }
+        IconButton(onClick = onImportProject) {
+            Icon(
+                imageVector = Icons.Default.KeyboardArrowDown,
+                contentDescription = stringResource(R.string.projects_import),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
         }
         // IconButton keeps the 48dp touch target while the glyph itself stays 20dp.
         IconButton(onClick = onNewProject) {
@@ -197,13 +233,16 @@ private fun SectionLabel(text: String) {
 private fun ProjectRow(
     project: Project,
     active: Boolean,
+    running: Boolean,
     locked: Boolean,
     canDelete: Boolean,
     onOpen: () -> Unit,
     onDelete: () -> Unit,
+    onExport: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val tokens = LocalForgeThemeTokens.current
 
     Box {
         Column {
@@ -216,8 +255,8 @@ private fun ProjectRow(
                         enabled = !locked,
                         role = Role.Button,
                         onClick = onOpen,
-                        onLongClickLabel = if (canDelete) stringResource(R.string.shell_delete_project) else null,
-                        onLongClick = if (canDelete) ({ menuOpen = true }) else null,
+                        onLongClickLabel = stringResource(R.string.projects_more_actions),
+                        onLongClick = { menuOpen = true },
                     )
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -233,14 +272,30 @@ private fun ProjectRow(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = if (locked) stringResource(R.string.projects_agent_running) else project.subtitle(),
+                        text = if (running) stringResource(R.string.projects_agent_running) else project.subtitle(),
                         fontSize = 12.5.sp,
-                        color = muted,
+                        color = if (running) tokens.accentText else muted,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
                 Spacer(modifier = Modifier.width(12.dp))
+                if (running) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(100))
+                            .background(tokens.accentText.copy(alpha = 0.15f))
+                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.projects_running_badge),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = tokens.accentText,
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
                 Text(
                     text = project.formattedUpdatedAt,
                     fontSize = 12.sp,
@@ -256,13 +311,23 @@ private fun ProjectRow(
         }
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
             DropdownMenuItem(
-                text = { Text(stringResource(R.string.shell_delete_project)) },
-                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                text = { Text(stringResource(R.string.projects_export)) },
+                leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
                 onClick = {
                     menuOpen = false
-                    onDelete()
+                    onExport()
                 },
             )
+            if (canDelete) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.shell_delete_project)) },
+                    leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                    onClick = {
+                        menuOpen = false
+                        onDelete()
+                    },
+                )
+            }
         }
     }
 }

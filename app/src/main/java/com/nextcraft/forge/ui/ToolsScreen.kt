@@ -14,10 +14,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -42,13 +47,25 @@ private data class ToolEntry(
 )
 
 private val developmentTools = listOf(
+    ToolEntry(ForgeTab.TOOLCHAINS, Icons.Default.Build, R.string.tools_toolchains, R.string.tools_toolchains_desc),
+    ToolEntry(ForgeTab.DIAGNOSTICS, Icons.Default.Info, R.string.tools_diagnostics, R.string.tools_diagnostics_desc),
     ToolEntry(ForgeTab.FILES, Icons.Default.Edit, R.string.tools_files, R.string.tools_files_desc),
+    ToolEntry(ForgeTab.GIT, Icons.Default.Share, R.string.tools_git, R.string.tools_git_desc),
     ToolEntry(ForgeTab.TERMINAL, Icons.Default.List, R.string.shell_terminal, R.string.tools_terminal_desc),
     ToolEntry(ForgeTab.PREVIEW, Icons.Default.PlayArrow, R.string.tools_web_preview, R.string.tools_web_preview_desc),
 )
 
 private val buildTools = listOf(
     ToolEntry(ForgeTab.ANDROID, Icons.Default.Build, R.string.tools_android_builder, R.string.tools_android_builder_desc),
+    ToolEntry(ForgeTab.CICD, Icons.Default.Refresh, R.string.tools_cicd, R.string.tools_cicd_desc),
+)
+
+private val infrastructureTools = listOf(
+    ToolEntry(ForgeTab.SSH, Icons.Default.Lock, R.string.tools_ssh, R.string.tools_ssh_desc),
+)
+
+private val systemTools = listOf(
+    ToolEntry(ForgeTab.CHECKPOINTS, Icons.Default.DateRange, R.string.tools_checkpoints, R.string.tools_checkpoints_desc),
 )
 
 /**
@@ -73,6 +90,8 @@ fun ToolsScreen(
         )
         ToolsSection(stringResource(R.string.tools_section_development), developmentTools, onOpen)
         ToolsSection(stringResource(R.string.tools_section_build_deploy), buildTools, onOpen)
+        ToolsSection(stringResource(R.string.tools_section_infrastructure), infrastructureTools, onOpen)
+        ToolsSection(stringResource(R.string.tools_section_system), systemTools, onOpen)
     }
 }
 

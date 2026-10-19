@@ -336,6 +336,8 @@ sealed interface RuntimeEvent {
         val paths: List<String> get() = changes.map { it.path }
     }
     data class PreviewStarted(override val sessionId: String, val url: String) : RuntimeEvent
+    /** The agent's own conversation id (Claude `--resume`), known once its init event arrives. */
+    data class SessionIdentified(override val sessionId: String, val agentSessionId: String) : RuntimeEvent
     data class SessionCompleted(override val sessionId: String) : RuntimeEvent
     data class SessionFailed(override val sessionId: String, val reason: String) : RuntimeEvent
 }

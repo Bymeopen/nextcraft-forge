@@ -5,16 +5,25 @@ import com.nextcraft.forge.model.ChangeItem
 import com.nextcraft.forge.model.DiffLine
 import com.nextcraft.forge.model.DiffLineType
 import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
+/** One tracked workspace file inside a baseline or history manifest. */
+internal data class ManifestEntry(val sha256: String, val size: Long, val mtime: Long)
+
 /**
  * Workspace checkpoint / snapshot / diff store shared by agent bridges.
  *
- * Uses isolated physical file copies (never hardlinks) for baseline snapshots so
- * in-place file writes (`O_TRUNC`) by coding agents never mutate the checkpoint backup.
+ * Layout under `checkpoints/<project>/`:
+ *  - `objects/<sha256>`: content-addressed copies, written once per unique content (0600).
+ *  - `latest/manifest.json`: baseline `{path -> {sha, size, mtime}}` taken before the current turn.
+ *  - `latest/changes.json`: paths changed since that baseline and not yet reviewed.
+ *  - `history/<epochMillis>.json`: named snapshots referencing the same objects (see [CheckpointHistory]).
+ *
+ * Objects are distinct inodes, so in-place `O_TRUNC` writes by an agent never mutate a baseline.
  */
 class WorkspaceCheckpoints(
     private val filesDir: File,
@@ -28,7 +37,10 @@ class WorkspaceCheckpoints(
 
     private fun lockFor(projectId: String): Any = projectLocks.computeIfAbsent(projectId) { Any() }
 
-    private fun safeProjectId(projectId: String): String {
+    internal fun <T> withProjectLock(projectId: String, block: () -> T): T =
+        synchronized(lockFor(safeProjectId(projectId))) { block() }
+
+    internal fun safeProjectId(projectId: String): String {
         val clean = projectId.trim()
         require(
             clean.isNotEmpty() &&
@@ -67,72 +79,176 @@ class WorkspaceCheckpoints(
         }
         synchronized(lockFor(safeId)) {
             val previous = projectRoots.put(safeId, normalized).orEmpty()
-            if (previous != normalized) checkpointDir(safeId).deleteRecursively()
+            if (previous != normalized) {
+                checkpointDir(safeId).deleteRecursively()
+                collectGarbageUnlocked(safeId)
+            }
         }
     }
 
-    fun checkpointDir(projectId: String) = File(filesDir, "checkpoints/${safeProjectId(projectId)}/latest")
+    internal fun projectDir(projectId: String) = File(filesDir, "checkpoints/${safeProjectId(projectId)}")
+    fun checkpointDir(projectId: String) = File(projectDir(projectId), "latest")
+    internal fun objectsDir(projectId: String) = File(projectDir(projectId), "objects")
+    internal fun historyDir(projectId: String) = File(projectDir(projectId), "history")
+    internal fun objectFile(projectId: String, sha256: String): File {
+        require(sha256.length == 64 && sha256.all { it in '0'..'9' || it in 'a'..'f' }) { "Invalid object id" }
+        return File(objectsDir(projectId), sha256)
+    }
+
+    /** Removes every checkpoint artifact (baseline, history and objects) of a project. */
+    fun deleteProjectCheckpoints(projectId: String) {
+        val safeId = safeProjectId(projectId)
+        synchronized(lockFor(safeId)) { projectDir(safeId).deleteRecursively() }
+    }
 
     fun createCheckpoint(projectId: String, workspace: File) {
         val safeId = safeProjectId(projectId)
         synchronized(lockFor(safeId)) {
-            val checkpoint = checkpointDir(safeId)
-            val backup = File(checkpoint, "project")
+            migrateLegacyBaselineUnlocked(safeId)
+            val manifestFile = baselineManifestFile(safeId)
             // Keep the original baseline only while unreviewed pending files exist.
-            if (backup.isDirectory && (readChangedPathsUnlocked(safeId).isNotEmpty() || isManifestUnreadable(safeId))) return
-            File(checkpoint, "changes.json").delete()
-            File(checkpoint, ".changes.json.tmp").delete()
-            backup.mkdirs()
-            val workspacePath = workspace.canonicalFile.toPath()
-            val activeRelatives = HashSet<String>()
-            workspace.walkTopDown()
-                .onEnter { directory ->
-                    val relative = if (directory == workspace) "" else directory.relativeTo(workspace).invariantSeparatorsPath
-                    directory == workspace || (
-                        !isInternalRuntimePath(relative) &&
-                            !Files.isSymbolicLink(directory.toPath()) &&
-                            runCatching { directory.canonicalFile.toPath().startsWith(workspacePath) }.getOrDefault(false)
-                        )
-                }
-                .filter {
-                    it.isFile &&
-                        !isInternalRuntimePath(it.relativeTo(workspace).invariantSeparatorsPath) &&
-                        !Files.isSymbolicLink(it.toPath()) &&
-                        runCatching { it.canonicalFile.toPath().startsWith(workspacePath) }.getOrDefault(false)
-                }
-                .forEach { source ->
-                    val relative = source.relativeTo(workspace).invariantSeparatorsPath
-                    activeRelatives.add(relative)
-                    val destination = safeWorkspaceFile(backup, relative)
-                    // Fast path: identical size + mtime means the baseline is current. Only hash
-                    // when metadata differs, so large workspaces are not re-digested every prompt.
-                    val upToDate = destination.isFile &&
-                        !Files.isSymbolicLink(destination.toPath()) &&
-                        destination.length() == source.length() &&
-                        (
-                            destination.lastModified() == source.lastModified() ||
-                                digest(destination) == digest(source)
-                            )
-                    if (!upToDate) {
-                        destination.parentFile?.mkdirs()
-                        // Always copy bytes into a distinct inode so in-place O_TRUNC edits in
-                        // workspace never overwrite the checkpoint baseline!
-                        source.copyTo(destination, overwrite = true)
-                        runCatching { destination.setLastModified(source.lastModified()) }
-                    }
-                }
-            val backupPath = backup.canonicalFile.toPath()
-            val staleFiles = backup.walkTopDown()
-                .filter {
-                    it.isFile &&
-                        runCatching { it.canonicalFile.toPath().startsWith(backupPath) }.getOrDefault(false) &&
-                        it.relativeTo(backup).invariantSeparatorsPath !in activeRelatives
-                }
-                .toList()
-            staleFiles.forEach { stale ->
-                deleteTargetAndPruneEmptyParents(backup, stale)
-            }
+            if (manifestFile.isFile && (readChangedPathsUnlocked(safeId).isNotEmpty() || isManifestUnreadable(safeId))) return
+            File(checkpointDir(safeId), "changes.json").delete()
+            File(checkpointDir(safeId), ".changes.json.tmp").delete()
+            val previous = readManifestFile(manifestFile)
+            val manifest = captureManifestUnlocked(safeId, workspace, previous)
+            writeManifestFile(manifestFile, manifest)
+            collectGarbageUnlocked(safeId)
         }
+    }
+
+    /**
+     * Walks [workspace], stores any content not yet in the object store, and returns the manifest.
+     * Files whose size and mtime match [previous] are not re-hashed.
+     */
+    internal fun captureManifestUnlocked(
+        safeId: String,
+        workspace: File,
+        previous: Map<String, ManifestEntry> = emptyMap(),
+    ): Map<String, ManifestEntry> {
+        val manifest = LinkedHashMap<String, ManifestEntry>()
+        walkWorkspaceFiles(workspace).forEach { source ->
+            val relative = source.relativeTo(workspace).invariantSeparatorsPath
+            val size = source.length()
+            val mtime = source.lastModified()
+            val known = previous[relative]
+            val entry = if (known != null && known.size == size && known.mtime == mtime && objectFile(safeId, known.sha256).isFile) {
+                known
+            } else {
+                ManifestEntry(storeObject(safeId, source), size, mtime)
+            }
+            manifest[relative] = entry
+        }
+        return manifest
+    }
+
+    internal fun walkWorkspaceFiles(workspace: File): Sequence<File> {
+        val workspacePath = workspace.canonicalFile.toPath()
+        return workspace.walkTopDown()
+            .onEnter { directory ->
+                val relative = if (directory == workspace) "" else directory.relativeTo(workspace).invariantSeparatorsPath
+                directory == workspace || (
+                    !isInternalRuntimePath(relative) &&
+                        !Files.isSymbolicLink(directory.toPath()) &&
+                        runCatching { directory.canonicalFile.toPath().startsWith(workspacePath) }.getOrDefault(false)
+                    )
+            }
+            .filter {
+                it.isFile &&
+                    !isInternalRuntimePath(it.relativeTo(workspace).invariantSeparatorsPath) &&
+                    !Files.isSymbolicLink(it.toPath()) &&
+                    runCatching { it.canonicalFile.toPath().startsWith(workspacePath) }.getOrDefault(false)
+            }
+    }
+
+    /** Copies [source] into the object store if its content is new; returns the sha256. */
+    internal fun storeObject(safeId: String, source: File): String {
+        val sha = digest(source)
+        val target = objectFile(safeId, sha)
+        if (target.isFile && target.length() == source.length()) return sha
+        target.parentFile?.mkdirs()
+        val tmp = File(target.parentFile, ".$sha.${System.nanoTime()}.tmp")
+        try {
+            source.copyTo(tmp, overwrite = true)
+            runCatching { android.system.Os.chmod(tmp.absolutePath, 0b110000000) }
+            if (!tmp.renameTo(target)) {
+                if (!target.isFile) tmp.copyTo(target, overwrite = true)
+            }
+        } finally {
+            tmp.delete()
+        }
+        return sha
+    }
+
+    internal fun restoreObject(safeId: String, entry: ManifestEntry, target: File) {
+        val source = objectFile(safeId, entry.sha256)
+        check(source.isFile) { "Checkpoint object is missing" }
+        target.parentFile?.mkdirs()
+        source.copyTo(target, overwrite = true)
+        runCatching { target.setLastModified(entry.mtime) }
+    }
+
+    private fun baselineManifestFile(safeId: String) = File(checkpointDir(safeId), "manifest.json")
+
+    internal fun readManifestFile(file: File): Map<String, ManifestEntry> {
+        if (!file.isFile) return emptyMap()
+        return runCatching {
+            val root = JSONObject(file.readText())
+            val files = root.optJSONObject("files") ?: root
+            val out = LinkedHashMap<String, ManifestEntry>()
+            files.keys().forEach { path ->
+                val obj = files.optJSONObject(path) ?: return@forEach
+                val sha = obj.optString("sha256")
+                if (sha.length == 64) out[path] = ManifestEntry(sha, obj.optLong("size"), obj.optLong("mtime"))
+            }
+            out
+        }.getOrDefault(emptyMap())
+    }
+
+    internal fun writeManifestFile(file: File, manifest: Map<String, ManifestEntry>, extra: Map<String, Any> = emptyMap()) {
+        val files = JSONObject()
+        manifest.forEach { (path, entry) ->
+            files.put(
+                path,
+                JSONObject().put("sha256", entry.sha256).put("size", entry.size).put("mtime", entry.mtime),
+            )
+        }
+        val root = JSONObject().put("version", 2).put("files", files)
+        extra.forEach { (key, value) -> root.put(key, value) }
+        writeManifestAtomically(file, root.toString())
+    }
+
+    internal fun readBaselineManifest(projectId: String): Map<String, ManifestEntry> =
+        readManifestFile(baselineManifestFile(safeProjectId(projectId)))
+
+    /** Deletes objects no baseline or history snapshot references. Caller holds the project lock. */
+    internal fun collectGarbageUnlocked(safeId: String) {
+        val objects = objectsDir(safeId)
+        if (!objects.isDirectory) return
+        val referenced = HashSet<String>()
+        readManifestFile(baselineManifestFile(safeId)).values.forEach { referenced += it.sha256 }
+        historyDir(safeId).listFiles { f -> f.isFile && f.name.endsWith(".json") }.orEmpty().forEach { file ->
+            readManifestFile(file).values.forEach { referenced += it.sha256 }
+        }
+        objects.listFiles().orEmpty().forEach { file ->
+            if (file.name.startsWith(".") || file.name !in referenced) file.delete()
+        }
+    }
+
+    /** Moves a pre-v2 `latest/project/` tree into the object store once. */
+    private fun migrateLegacyBaselineUnlocked(safeId: String) {
+        val legacy = File(checkpointDir(safeId), "project")
+        if (!legacy.isDirectory) return
+        val manifestFile = baselineManifestFile(safeId)
+        if (!manifestFile.isFile) {
+            val manifest = LinkedHashMap<String, ManifestEntry>()
+            walkWorkspaceFiles(legacy).forEach { file ->
+                val relative = file.relativeTo(legacy).invariantSeparatorsPath
+                manifest[relative] = ManifestEntry(storeObject(safeId, file), file.length(), file.lastModified())
+            }
+            writeManifestFile(manifestFile, manifest)
+        }
+        legacy.deleteRecursively()
     }
 
     fun saveChangedPaths(projectId: String, paths: List<String>) {
@@ -170,16 +286,19 @@ class WorkspaceCheckpoints(
         }.getOrDefault(emptyList())
     }
 
+    private fun writeRemainingUnlocked(safeId: String, remaining: List<String>) {
+        if (remaining.isEmpty()) {
+            checkpointDir(safeId).deleteRecursively()
+            collectGarbageUnlocked(safeId)
+        } else {
+            writeManifestAtomically(File(checkpointDir(safeId), "changes.json"), JSONArray(remaining).toString())
+        }
+    }
+
     fun removeChangedPath(projectId: String, path: String) {
         val safeId = safeProjectId(projectId)
         synchronized(lockFor(safeId)) {
-            val remaining = readChangedPathsUnlocked(safeId).filterNot { it == path }
-            if (remaining.isEmpty()) {
-                checkpointDir(safeId).deleteRecursively()
-            } else {
-                val manifest = File(checkpointDir(safeId), "changes.json")
-                writeManifestAtomically(manifest, JSONArray(remaining).toString())
-            }
+            writeRemainingUnlocked(safeId, readChangedPathsUnlocked(safeId).filterNot { it == path })
         }
     }
 
@@ -187,24 +306,20 @@ class WorkspaceCheckpoints(
         val safeId = safeProjectId(projectId)
         if (isInternalRuntimePath(path)) return false
         return synchronized(lockFor(safeId)) {
+            migrateLegacyBaselineUnlocked(safeId)
             val pending = readChangedPathsUnlocked(safeId)
             if (path !in pending) return@synchronized false
-            val backup = File(checkpointDir(safeId), "project")
-            if (!backup.isDirectory) return@synchronized false
+            val manifestFile = baselineManifestFile(safeId)
+            if (!manifestFile.isFile) return@synchronized false
+            val baseline = readManifestFile(manifestFile)
             val target = safeWorkspaceFile(workspace, path)
-            val original = safeWorkspaceFile(backup, path)
-            if (original.isFile) {
-                target.parentFile?.mkdirs()
-                original.copyTo(target, overwrite = true)
+            val original = baseline[path]
+            if (original != null) {
+                restoreObject(safeId, original, target)
             } else if (target.isFile) {
                 deleteTargetAndPruneEmptyParents(workspace, target)
             }
-            val remaining = pending.filterNot { it == path }
-            if (remaining.isEmpty()) {
-                checkpointDir(safeId).deleteRecursively()
-            } else {
-                writeManifestAtomically(File(checkpointDir(safeId), "changes.json"), JSONArray(remaining).toString())
-            }
+            writeRemainingUnlocked(safeId, pending.filterNot { it == path })
             true
         }
     }
@@ -212,21 +327,22 @@ class WorkspaceCheckpoints(
     fun revertLatestTurn(projectId: String, workspace: File): List<String> {
         val safeId = safeProjectId(projectId)
         return synchronized(lockFor(safeId)) {
-            val checkpoint = checkpointDir(safeId)
-            val backup = File(checkpoint, "project")
+            migrateLegacyBaselineUnlocked(safeId)
+            val manifestFile = baselineManifestFile(safeId)
             val paths = readChangedPathsUnlocked(safeId).filterNot(::isInternalRuntimePath)
-            if (!backup.isDirectory || paths.isEmpty()) return@synchronized emptyList()
+            if (!manifestFile.isFile || paths.isEmpty()) return@synchronized emptyList()
+            val baseline = readManifestFile(manifestFile)
             paths.forEach { path ->
                 val target = safeWorkspaceFile(workspace, path)
-                val original = safeWorkspaceFile(backup, path)
-                if (original.isFile) {
-                    target.parentFile?.mkdirs()
-                    original.copyTo(target, overwrite = true)
+                val original = baseline[path]
+                if (original != null) {
+                    restoreObject(safeId, original, target)
                 } else if (target.isFile) {
                     deleteTargetAndPruneEmptyParents(workspace, target)
                 }
             }
-            checkpoint.deleteRecursively()
+            checkpointDir(safeId).deleteRecursively()
+            collectGarbageUnlocked(safeId)
             paths
         }
     }
@@ -235,24 +351,20 @@ class WorkspaceCheckpoints(
         val safeId = safeProjectId(projectId)
         if (isInternalRuntimePath(path)) return false
         return synchronized(lockFor(safeId)) {
+            migrateLegacyBaselineUnlocked(safeId)
             val pending = readChangedPathsUnlocked(safeId)
             if (path !in pending) return@synchronized false
-            val checkpoint = checkpointDir(safeId)
-            val backup = File(checkpoint, "project")
+            val manifestFile = baselineManifestFile(safeId)
+            val baseline = LinkedHashMap(readManifestFile(manifestFile))
             val current = safeWorkspaceFile(workspace, path)
-            val baseline = safeWorkspaceFile(backup, path)
             if (current.isFile) {
-                baseline.parentFile?.mkdirs()
-                current.copyTo(baseline, overwrite = true)
-            } else if (baseline.isFile) {
-                deleteTargetAndPruneEmptyParents(backup, baseline)
+                baseline[path] = ManifestEntry(storeObject(safeId, current), current.length(), current.lastModified())
+            } else {
+                baseline.remove(path)
             }
             val remaining = pending.filterNot { it == path }
-            if (remaining.isEmpty()) {
-                checkpoint.deleteRecursively()
-            } else {
-                writeManifestAtomically(File(checkpoint, "changes.json"), JSONArray(remaining).toString())
-            }
+            if (remaining.isNotEmpty()) writeManifestFile(manifestFile, baseline)
+            writeRemainingUnlocked(safeId, remaining)
             true
         }
     }
@@ -261,10 +373,11 @@ class WorkspaceCheckpoints(
         val safeId = safeProjectId(projectId)
         synchronized(lockFor(safeId)) {
             checkpointDir(safeId).deleteRecursively()
+            collectGarbageUnlocked(safeId)
         }
     }
 
-    private fun deleteTargetAndPruneEmptyParents(root: File, target: File) {
+    internal fun deleteTargetAndPruneEmptyParents(root: File, target: File) {
         val rootCanonical = runCatching { root.canonicalFile }.getOrDefault(root)
         var parent = target.parentFile
         target.delete()
@@ -283,7 +396,7 @@ class WorkspaceCheckpoints(
         }
     }
 
-    private fun writeManifestAtomically(manifest: File, content: String) {
+    internal fun writeManifestAtomically(manifest: File, content: String) {
         manifest.parentFile?.mkdirs()
         val tmp = File(manifest.parentFile, ".${manifest.name}.tmp")
         tmp.writeText(content)
@@ -295,9 +408,14 @@ class WorkspaceCheckpoints(
     }
 
     fun buildChangeDetails(projectId: String, workspace: File, paths: List<String>): List<ChangeItem> {
-        val backup = File(checkpointDir(projectId), "project")
+        val safeId = safeProjectId(projectId)
+        val baseline = synchronized(lockFor(safeId)) {
+            migrateLegacyBaselineUnlocked(safeId)
+            readManifestFile(baselineManifestFile(safeId))
+        }
         return paths.map { path ->
-            val beforeFile = safeWorkspaceFile(backup, path).takeIf(File::isFile)
+            val beforeEntry = baseline[path]?.takeIf { objectFile(safeId, it.sha256).isFile }
+            val beforeFile = beforeEntry?.let { objectFile(safeId, it.sha256) }
             val afterFile = safeWorkspaceFile(workspace, path).takeIf(File::isFile)
             if (listOfNotNull(beforeFile, afterFile).any { it.length() > MAX_DIFF_FILE_BYTES }) {
                 return@map ChangeItem(
@@ -463,25 +581,8 @@ class WorkspaceCheckpoints(
         return file
     }
 
-    fun snapshot(root: File): Map<String, String> {
-        val rootPath = root.canonicalFile.toPath()
-        return root.walkTopDown()
-            .onEnter { directory ->
-                val relative = if (directory == root) "" else directory.relativeTo(root).invariantSeparatorsPath
-                directory == root || (
-                    !isInternalRuntimePath(relative) &&
-                        !Files.isSymbolicLink(directory.toPath()) &&
-                        runCatching { directory.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)
-                    )
-            }
-            .filter {
-                it.isFile &&
-                    !isInternalRuntimePath(it.relativeTo(root).invariantSeparatorsPath) &&
-                    !Files.isSymbolicLink(it.toPath()) &&
-                    runCatching { it.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)
-            }
-            .associate { it.relativeTo(root).invariantSeparatorsPath to digest(it) }
-    }
+    fun snapshot(root: File): Map<String, String> =
+        walkWorkspaceFiles(root).associate { it.relativeTo(root).invariantSeparatorsPath to digest(it) }
 
     fun changedFiles(root: File, before: Map<String, String>): List<String> {
         val after = snapshot(root)
@@ -533,6 +634,7 @@ class WorkspaceCheckpoints(
         private const val DIFF_CONTEXT_LINES = 3
         private val IGNORED_DIRECTORY_NAMES = setOf(
             ".claude",
+            ".nextcraft",
             ".git",
             ".gradle",
             ".idea",

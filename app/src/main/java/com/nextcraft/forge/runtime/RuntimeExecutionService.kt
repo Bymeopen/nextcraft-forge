@@ -39,6 +39,32 @@ class RuntimeExecutionService : Service() {
         incomingProjectName?.takeIf(String::isNotBlank)?.let { projectNameOverride = it }
 
         when (action) {
+            ACTION_SHOW_APPROVAL -> {
+                val approvalId = intent?.getStringExtra(EXTRA_APPROVAL_ID).orEmpty()
+                if (approvalId.isNotBlank()) {
+                    showApprovalNotification(
+                        approvalId,
+                        intent?.getStringExtra(EXTRA_TOOL_NAME).orEmpty().ifBlank { "Tool" },
+                        incomingDetail.orEmpty(),
+                    )
+                }
+                if (!taskRunning) stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_APPROVE, ACTION_DENY -> {
+                val approvalId = intent?.getStringExtra(EXTRA_APPROVAL_ID).orEmpty()
+                if (approvalId.isNotBlank()) {
+                    ApprovalRelay.respond(approvalId, approved = action == ACTION_APPROVE)
+                    cancelApprovalNotification(approvalId)
+                }
+                if (!taskRunning) stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_CANCEL_APPROVAL -> {
+                intent?.getStringExtra(EXTRA_APPROVAL_ID)?.takeIf(String::isNotBlank)?.let(::cancelApprovalNotification)
+                if (!taskRunning) stopSelf()
+                return START_NOT_STICKY
+            }
             ACTION_STOP, LEGACY_ACTION_STOP -> {
                 RuntimeTaskController.requestStop()
                 if (!taskRunning) {
@@ -132,6 +158,38 @@ class RuntimeExecutionService : Service() {
         return builder.build()
     }
 
+    /** High-priority notification with Approve/Deny actions; answered through [ApprovalRelay]. */
+    fun showApprovalNotification(approvalId: String, toolName: String, explanation: String) {
+        fun action(actionName: String, requestCode: Int) = PendingIntent.getService(
+            this,
+            requestCode,
+            Intent(this, RuntimeExecutionService::class.java)
+                .setAction(actionName)
+                .putExtra(EXTRA_APPROVAL_ID, approvalId),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val base = approvalId.hashCode() and 0x3FFFFFFF
+        val detail = explanation.ifBlank { "$toolName wants to run in the workspace." }
+        val notification = NotificationCompat.Builder(this, APPROVAL_CHANNEL_ID)
+            .setSmallIcon(smallIconRes())
+            .setContentTitle("Approve $toolName?")
+            .setContentText(detail)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
+            .setContentIntent(openAppIntent())
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(false)
+            .setOngoing(true)
+            .addAction(0, "Deny", action(ACTION_DENY, base * 2))
+            .addAction(0, "Approve", action(ACTION_APPROVE, base * 2 + 1))
+            .build()
+        getSystemService(NotificationManager::class.java)?.notify(APPROVAL_TAG, base, notification)
+    }
+
+    private fun cancelApprovalNotification(approvalId: String) {
+        getSystemService(NotificationManager::class.java)?.cancel(APPROVAL_TAG, approvalId.hashCode() and 0x3FFFFFFF)
+    }
+
     private fun finishTask(title: String, detail: String, failed: Boolean) {
         taskRunning = false
         releaseWakeLock()
@@ -195,6 +253,12 @@ class RuntimeExecutionService : Service() {
         const val ACTION_COMPLETE = RuntimeExecutionServiceContract.ACTION_COMPLETE
         const val ACTION_FAILED = RuntimeExecutionServiceContract.ACTION_FAILED
         const val ACTION_CANCELLED = RuntimeExecutionServiceContract.ACTION_CANCELLED
+        const val ACTION_SHOW_APPROVAL = RuntimeExecutionServiceContract.ACTION_SHOW_APPROVAL
+        const val ACTION_CANCEL_APPROVAL = RuntimeExecutionServiceContract.ACTION_CANCEL_APPROVAL
+        const val ACTION_APPROVE = "com.nextcraft.forge.runtime.action.APPROVE"
+        const val ACTION_DENY = "com.nextcraft.forge.runtime.action.DENY"
+        const val EXTRA_APPROVAL_ID = RuntimeExecutionServiceContract.EXTRA_APPROVAL_ID
+        const val EXTRA_TOOL_NAME = RuntimeExecutionServiceContract.EXTRA_TOOL_NAME
 
         const val EXTRA_PROJECT_NAME = RuntimeExecutionServiceContract.EXTRA_PROJECT_NAME
         const val EXTRA_DETAIL = RuntimeExecutionServiceContract.EXTRA_DETAIL
@@ -213,6 +277,8 @@ class RuntimeExecutionService : Service() {
 
         private const val RUNNING_CHANNEL_ID = "runtime"
         private const val RESULT_CHANNEL_ID = "task-results"
+        private const val APPROVAL_CHANNEL_ID = "approvals"
+        private const val APPROVAL_TAG = "approval"
         private const val RUNNING_NOTIFICATION_ID = 41
         private const val RESULT_NOTIFICATION_ID = 42
         private const val MAX_WAKE_LOCK_MS = 90 * 60 * 1_000L
@@ -226,6 +292,15 @@ class RuntimeExecutionService : Service() {
                     NotificationManager.IMPORTANCE_LOW,
                 ).apply {
                     description = "Shows live progress while an agent or build task is running."
+                },
+            )
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    APPROVAL_CHANNEL_ID,
+                    "Tool approvals",
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    description = "Asks before an agent runs a high-risk command."
                 },
             )
             manager.createNotificationChannel(

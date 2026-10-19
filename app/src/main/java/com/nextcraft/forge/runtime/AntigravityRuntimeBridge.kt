@@ -3,7 +3,6 @@ package com.nextcraft.forge.runtime
 import android.content.Context
 import com.nextcraft.forge.model.stringOrEmpty
 import com.nextcraft.forge.model.AgentKind
-import com.nextcraft.forge.model.ChangeItem
 import com.nextcraft.forge.model.ChatMessage
 import com.nextcraft.forge.model.ProjectKind
 import com.nextcraft.forge.model.ProviderProfile
@@ -11,13 +10,10 @@ import com.nextcraft.forge.model.RuntimeEvent
 import com.nextcraft.forge.model.ToolRequest
 import java.io.File
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
@@ -174,29 +170,13 @@ private suspend fun stopAfterTerminalResult(process: Process) {
 }
 
 class AntigravityRuntimeBridge(
-    private val context: Context,
+    context: Context,
     private val model: () -> String,
     private val effort: () -> String,
     private val conversationId: (String) -> String?,
     private val saveConversationId: (String, String) -> Unit,
-) : RuntimeBridge {
+) : AgentBridgeBase(context, "AntigravityBridge", "Antigravity") {
     private val installer = RuntimeInstaller(context)
-    private val checkpoints = WorkspaceCheckpoints(context.filesDir, context)
-    private val eventBus = MutableSharedFlow<RuntimeEvent>(
-        extraBufferCapacity = 1024,
-        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.SUSPEND,
-    )
-    override val events: Flow<RuntimeEvent> = eventBus
-    private val finished = ConcurrentHashMap.newKeySet<String>()
-    @Volatile private var activeProcess: Process? = null
-    @Volatile private var activeSessionId: String? = null
-    @Volatile private var userStopRequested = false
-    @Volatile private var foregroundResultPosted = false
-    @Volatile private var activeProjectSlug = ""
-    @Volatile private var taskStartedAtElapsedRealtime = 0L
-    @Volatile private var lastForegroundProgressAt = 0L
-
-    fun configureProjectRoot(projectId: String, rootPath: String) = checkpoints.configureProjectRoot(projectId, rootPath)
 
     /**
      * Lightweight connectivity probe: sends a tiny hello to agy and returns its
@@ -311,47 +291,29 @@ class AntigravityRuntimeBridge(
         prompt: String,
         conversationHistory: List<ChatMessage>,
         provider: ProviderProfile,
+        resumeSessionId: String?,
     ): String = withContext(Dispatchers.IO + NonCancellable) {
         val sessionId = UUID.randomUUID().toString()
         val sessionStartedAtMillis = System.currentTimeMillis()
-        activeSessionId = sessionId
-        userStopRequested = false
-        foregroundResultPosted = false
-        activeProjectSlug = projectSlug
-        taskStartedAtElapsedRealtime = android.os.SystemClock.elapsedRealtime()
-        lastForegroundProgressAt = 0L
-        finished.remove(sessionId)
+        beginSession(sessionId, projectSlug)
         eventBus.emit(RuntimeEvent.SessionStarted(sessionId))
         if (!installer.isAgentInstalled(AgentKind.ANTIGRAVITY)) {
-            emitFailure(sessionId, "Antigravity CLI is not installed. Open Settings → Coding agent to install it.")
+            emitFailureOnce(sessionId, "Antigravity CLI is not installed. Open Settings → Coding agent to install it.")
             activeSessionId = null
             return@withContext sessionId
         }
 
         var spawnedOutputFile: File? = null
-        var stopHandler: (() -> Unit)? = null
         runCatching {
-            stopHandler = {
-                userStopRequested = true
-                val running = activeProcess
-                if (running != null) {
-                    Thread {
-                        runCatching {
-                            running.destroy()
-                            Thread.sleep(500)
-                            if (running.isAlive) running.destroyForcibly()
-                        }
-                    }.apply { isDaemon = true }.start()
-                }
-            }
-            RuntimeTaskController.stopAction = stopHandler
+            installStopHandler(sessionId)
             startForegroundRuntime(projectSlug)
             pushForegroundProgress("Starting Antigravity…")
             val installed = installer.installedRuntime()
             val workspace = checkpoints.ensureWorkspace(projectId)
             checkpoints.createCheckpoint(projectId, workspace)
+            runCatching { history.snapshot(projectId, workspace, "Before Antigravity turn") }
             val before = checkpoints.snapshot(workspace)
-            val command = antigravityCommand(model(), effort(), conversationId(projectId))
+            val command = antigravityCommand(model(), effort(), resumeSessionId?.takeIf(String::isNotBlank) ?: conversationId(projectId))
             val process = installer.process(
                 installed.chrootExec,
                 installed.rootfs,
@@ -385,7 +347,10 @@ class AntigravityRuntimeBridge(
                 if (line.isBlank()) return
                 lastDiagnostic = line.takeLast(1_000)
                 when (val event = AntigravityEventParser.parse(line)) {
-                    is AntigravityParsedEvent.Initialized -> saveConversationId(projectId, event.conversationId)
+                    is AntigravityParsedEvent.Initialized -> {
+                        saveConversationId(projectId, event.conversationId)
+                        eventBus.emit(RuntimeEvent.SessionIdentified(sessionId, event.conversationId))
+                    }
                     is AntigravityParsedEvent.Text -> {
                         assistantTextSeen = true
                         pushForegroundProgress("Antigravity is working…")
@@ -460,117 +425,29 @@ class AntigravityRuntimeBridge(
                     friendlyError(lastDiagnostic.ifBlank { "Antigravity exited with code $exit" })
                 }
             }
-            val paths = checkpoints.changedFiles(workspace, before)
-            if (paths.isNotEmpty()) {
-                checkpoints.saveChangedPaths(projectId, paths)
-                val allPending = checkpoints.readChangedPaths(projectId).filterNot(checkpoints::isInternalRuntimePath)
-                eventBus.emit(RuntimeEvent.FilesChanged(sessionId, checkpoints.buildChangeDetails(projectId, workspace, allPending)))
-            } else if (checkpoints.readChangedPaths(projectId).isEmpty()) {
-                acceptLastChanges(projectId)
-            }
-            emitCompleted(sessionId)
+            publishWorkspaceChanges(sessionId, projectId, workspace, before)
+            emitCompletedOnce(sessionId)
             finishForegroundRuntime(true, projectSlug, "Antigravity finished in $projectSlug")
         }.onFailure {
             val diagnostic = recentAntigravityDiagnostic(sessionStartedAtMillis)
             // A failure after launch (parser/IO/provider error) must not leave the agent running unattended in the chroot.
-            activeProcess?.let { running -> runCatching { if (running.isAlive) running.destroyForcibly() } }
+            killActiveProcessNow()
             val message = if (userStopRequested) {
                 "Stopped by user"
             } else {
                 antigravityFriendlyError(it.message.orEmpty(), diagnostic)
             }
-            emitFailure(sessionId, message)
+            emitFailureOnce(sessionId, message)
             if (userStopRequested) cancelForegroundRuntime()
             else finishForegroundRuntime(false, projectSlug, message)
         }
         runCatching { spawnedOutputFile?.delete() }
-        activeProcess = null
-        activeSessionId = null
-        activeProjectSlug = ""
-        taskStartedAtElapsedRealtime = 0L
-        RuntimeTaskController.release(stopHandler)
+        endSession(sessionId)
         sessionId
     }
 
     override suspend fun respondToApproval(request: ToolRequest, approved: Boolean) {
         // agy headless streaming runs with --dangerously-skip-permissions inside Chroot.
-    }
-
-    override suspend fun stopSession(sessionId: String) = withContext(Dispatchers.IO) {
-        if (activeSessionId == sessionId) {
-            userStopRequested = true
-            activeProcess?.destroy()
-            delay(500)
-            if (activeProcess?.isAlive == true) activeProcess?.destroyForcibly()
-            emitFailure(sessionId, "Stopped by user")
-        }
-    }
-
-    override suspend fun stopActiveSession() = activeSessionId?.let { stopSession(it) } ?: Unit
-
-    override suspend fun undoLastChanges(projectId: String): Boolean = withContext(Dispatchers.IO) {
-        val workspace = checkpoints.ensureWorkspace(projectId)
-        checkpoints.revertLatestTurn(projectId, workspace).isNotEmpty()
-    }
-
-    override suspend fun acceptLastChanges(projectId: String): Unit = withContext(Dispatchers.IO) {
-        checkpoints.acceptAll(projectId)
-    }
-
-    override suspend fun loadPendingChanges(projectId: String): List<ChangeItem> = withContext(Dispatchers.IO) {
-        val paths = checkpoints.readChangedPaths(projectId).filterNot(checkpoints::isInternalRuntimePath)
-        if (paths.isEmpty()) emptyList() else checkpoints.buildChangeDetails(projectId, checkpoints.ensureWorkspace(projectId), paths)
-    }
-
-    override suspend fun undoFileChange(projectId: String, path: String): Boolean = withContext(Dispatchers.IO) {
-        val workspace = checkpoints.ensureWorkspace(projectId)
-        checkpoints.revertFile(projectId, workspace, path)
-    }
-
-    override suspend fun acceptFileChange(projectId: String, path: String): Boolean = withContext(Dispatchers.IO) {
-        val workspace = checkpoints.ensureWorkspace(projectId)
-        checkpoints.acceptFile(projectId, workspace, path)
-    }
-
-    private suspend fun emitCompleted(sessionId: String) {
-        if (finished.add(sessionId)) eventBus.emit(RuntimeEvent.SessionCompleted(sessionId))
-    }
-
-    private suspend fun emitFailure(sessionId: String, reason: String) {
-        if (finished.add(sessionId)) eventBus.emit(RuntimeEvent.SessionFailed(sessionId, reason))
-    }
-
-    private fun startForegroundRuntime(projectName: String) {
-        RuntimeExecutionServiceContract.startForeground(context, projectName)
-    }
-
-    /** Keeps long, silent Antigravity turns visibly active in Android's foreground service. */
-    private fun pushForegroundProgress(detailRaw: String) {
-        if (activeSessionId == null) return
-        val now = android.os.SystemClock.elapsedRealtime()
-        if (now - lastForegroundProgressAt < FOREGROUND_PROGRESS_MIN_INTERVAL_MS) return
-        lastForegroundProgressAt = now
-        val detail = detailRaw.replace(Regex("\\s+"), " ").trim().take(110)
-        val elapsed = (now - taskStartedAtElapsedRealtime).coerceAtLeast(0L) / 1_000L
-        val minutes = elapsed / 60L
-        val seconds = elapsed % 60L
-        RuntimeExecutionServiceContract.pushProgress(
-            context,
-            activeProjectSlug,
-            "$detail · $minutes:${seconds.toString().padStart(2, '0')}",
-        )
-    }
-
-    private fun finishForegroundRuntime(completed: Boolean, projectName: String, detail: String) {
-        if (foregroundResultPosted) return
-        foregroundResultPosted = true
-        RuntimeExecutionServiceContract.finishForeground(context, completed, projectName, detail, "AntigravityBridge")
-    }
-
-    private fun cancelForegroundRuntime() {
-        if (foregroundResultPosted) return
-        foregroundResultPosted = true
-        RuntimeExecutionServiceContract.cancelForeground(context)
     }
 
     private fun friendlyError(raw: String): String = antigravityFriendlyError(raw)
@@ -586,10 +463,6 @@ class AntigravityRuntimeBridge(
             ?: return@runCatching ""
         latest.readTailText(12_000)
     }.getOrDefault("")
-
-    private companion object {
-        const val FOREGROUND_PROGRESS_MIN_INTERVAL_MS = 750L
-    }
 }
 
 internal fun antigravityFriendlyError(raw: String, diagnostic: String = ""): String {

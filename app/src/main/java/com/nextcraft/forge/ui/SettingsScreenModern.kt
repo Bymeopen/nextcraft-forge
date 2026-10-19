@@ -4,6 +4,8 @@ package com.nextcraft.forge.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -136,6 +138,12 @@ fun SettingsScreenModern(
                     subtitle = stringResource(R.string.settings_auto_approve_all_tools_subtitle),
                     checked = state.autoApproveAllTools,
                     onCheckedChange = viewModel::setAutoApproveAllTools,
+                )
+                ForgeToggleRow(
+                    title = stringResource(R.string.settings_battery_saver),
+                    subtitle = stringResource(R.string.settings_battery_saver_subtitle),
+                    checked = state.batterySaver,
+                    onCheckedChange = viewModel::setBatterySaver,
                 )
 
                 Divider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -909,6 +917,12 @@ fun SettingsScreenModern(
             }
         }
 
+        ForgeSectionLabel(stringResource(R.string.settings_backup_section), horizontalPadding = 6.dp)
+        VaultBackupCard(
+            onExport = viewModel::exportVaultBackup,
+            onImport = viewModel::importVaultBackup,
+        )
+
         ForgeSectionLabel(stringResource(R.string.settings_about), horizontalPadding = 6.dp)
         // 6. Application Self-Updater
         ForgeThemedCard(modifier = Modifier.fillMaxWidth()) {
@@ -920,6 +934,14 @@ fun SettingsScreenModern(
                     text = stringResource(R.string.settings_app_updates),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
+                )
+                OutlinedButton(onClick = viewModel::shareDiagnosticLog) {
+                    Text(stringResource(R.string.settings_share_diagnostic_log))
+                }
+                Text(
+                    text = stringResource(R.string.settings_share_diagnostic_log_subtitle),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 state.updateStatusMessage?.let { msg ->
                     Text(
@@ -944,4 +966,134 @@ fun SettingsScreenModern(
 
         Spacer(modifier = Modifier.height(16.dp))
     }
+}
+
+/**
+ * Encrypted export/restore of every stored API key. The passphrase lives only in plain `remember`
+ * state (never saved-instance state) and is handed over as a CharArray the ViewModel wipes.
+ */
+@Composable
+private fun VaultBackupCard(
+    onExport: (target: Uri, passphrase: CharArray) -> Unit,
+    onImport: (source: Uri, passphrase: CharArray) -> Unit,
+) {
+    var exportPassphrase by remember { mutableStateOf<String?>(null) }
+    var pendingImport by remember { mutableStateOf<Uri?>(null) }
+    var dialogMode by remember { mutableStateOf<String?>(null) } // "export" | "import"
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        val pass = exportPassphrase
+        exportPassphrase = null
+        if (uri != null && pass != null) onExport(uri, pass.toCharArray())
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            pendingImport = uri
+            dialogMode = "import"
+        }
+    }
+
+    ForgeThemedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.settings_backup_keys_title),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = stringResource(R.string.settings_backup_keys_subtitle),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { dialogMode = "export" }) {
+                    Text(stringResource(R.string.settings_backup_keys))
+                }
+                OutlinedButton(onClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) }) {
+                    Text(stringResource(R.string.settings_restore_keys))
+                }
+            }
+        }
+    }
+
+    dialogMode?.let { mode ->
+        PassphraseDialog(
+            confirmTwice = mode == "export",
+            onDismiss = {
+                dialogMode = null
+                pendingImport = null
+            },
+            onConfirm = { passphrase ->
+                dialogMode = null
+                if (mode == "export") {
+                    exportPassphrase = passphrase
+                    exportLauncher.launch("nextcraft-keys-backup.json")
+                } else {
+                    val source = pendingImport
+                    pendingImport = null
+                    if (source != null) onImport(source, passphrase.toCharArray())
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun PassphraseDialog(
+    confirmTwice: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var first by remember { mutableStateOf("") }
+    var second by remember { mutableStateOf("") }
+    val mismatch = confirmTwice && second.isNotEmpty() && first != second
+    val valid = first.length >= 8 && (!confirmTwice || first == second)
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_backup_passphrase_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = first,
+                    onValueChange = { first = it },
+                    label = { Text(stringResource(R.string.settings_backup_passphrase)) },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (confirmTwice) {
+                    OutlinedTextField(
+                        value = second,
+                        onValueChange = { second = it },
+                        label = { Text(stringResource(R.string.settings_backup_passphrase_confirm)) },
+                        singleLine = true,
+                        isError = mismatch,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Text(
+                    text = if (mismatch) {
+                        stringResource(R.string.settings_backup_passphrase_mismatch)
+                    } else {
+                        stringResource(R.string.settings_backup_passphrase_hint)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (mismatch) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onConfirm(first) }, enabled = valid) {
+                Text(stringResource(R.string.settings_backup_continue))
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.agent_cancel))
+            }
+        },
+    )
 }

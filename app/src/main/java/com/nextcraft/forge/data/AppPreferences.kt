@@ -75,6 +75,11 @@ class AppPreferences(private val context: Context) {
         get() = preferences.getBoolean("auto_sync_github", false)
         set(value) { preferences.edit().putBoolean("auto_sync_github", value).apply() }
 
+    /** Slows diagnostics polling and foreground updates, and refuses builds on a low, discharging battery. */
+    var batterySaver: Boolean
+        get() = preferences.getBoolean("battery_saver", false)
+        set(value) { preferences.edit().putBoolean("battery_saver", value).apply() }
+
     /** Whether high-risk tool executions prompt for interactive approval instead of immediate rejection. */
     var interactiveHighRiskApprovals: Boolean
         get() = preferences.getBoolean("interactive_high_risk_approvals", true)
@@ -94,6 +99,13 @@ class AppPreferences(private val context: Context) {
 
     fun loadAgentConversation(agent: AgentKind, projectId: String, chatId: String): String? =
         preferences.getString(agentConversationKey(agent, projectId, chatId), null)
+
+    /** Agent-side session id (Claude `--resume`) for one chat; same store as [saveAgentConversation]. */
+    fun saveAgentSessionId(agent: AgentKind, projectId: String, chatId: String, agentSessionId: String?) =
+        saveAgentConversation(agent, projectId, chatId, agentSessionId)
+
+    fun loadAgentSessionId(agent: AgentKind, projectId: String, chatId: String): String? =
+        loadAgentConversation(agent, projectId, chatId)
 
     fun clearAgentConversations(agent: AgentKind) {
         val stable = agent.stableId
@@ -448,70 +460,115 @@ class AppPreferences(private val context: Context) {
         return listOf(chat)
     }
 
-    /** Rebuilds the chat list from `<chatId>.json` files when `index.json` is lost or corrupt. */
+    /** Rebuilds the chat list from `<chatId>.jsonl` / `.json` files when `index.json` is lost or corrupt. */
     private fun recoverChatIndex(projectId: String, projectDir: File): List<ProjectChat> {
         val recovered = projectDir.listFiles { f ->
-            f.isFile && f.name.endsWith(".json") && f.name != "index.json" && !f.name.startsWith(".")
+            f.isFile && (f.name.endsWith(".jsonl") || f.name.endsWith(".json")) &&
+                f.name != "index.json" && !f.name.startsWith(".")
         }.orEmpty().mapNotNull { file ->
-            val id = file.name.removeSuffix(".json")
+            val id = file.name.removeSuffix(".jsonl").removeSuffix(".json")
             if (runCatching { safeStorageId(id) }.isFailure) return@mapNotNull null
             val modified = file.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
             ProjectChat(
                 id = id,
-                title = loadLegacyMessages(file).firstOrNull { it.fromUser }?.text?.toChatTitle() ?: "Recovered chat",
+                title = readMessagesFile(file).firstOrNull { it.fromUser }?.text?.toChatTitle() ?: "Recovered chat",
                 createdAtMillis = modified,
                 updatedAtMillis = modified,
             )
-        }.sortedByDescending { it.updatedAtMillis }
+        }.distinctBy { it.id }.sortedByDescending { it.updatedAtMillis }
         if (recovered.isNotEmpty()) saveProjectChats(projectId, recovered)
         return recovered
     }
 
+    private fun messagesFile(projectId: String, chatId: String): File =
+        File(File(chatsDir, safeStorageId(projectId)).also { it.mkdirs() }, "${safeStorageId(chatId)}.jsonl")
+
+    private fun legacyMessagesFile(projectId: String, chatId: String): File =
+        File(File(chatsDir, safeStorageId(projectId)), "${safeStorageId(chatId)}.json")
+
+    private fun serializeMessage(m: ChatMessage): JSONObject = JSONObject().apply {
+        put("id", m.id)
+        put("fromUser", m.fromUser)
+        put("text", m.text)
+        put("createdAt", m.createdAt.toString())
+        put("attachments", JSONArray().apply {
+            m.attachments.forEach { attachment ->
+                put(JSONObject().apply {
+                    put("id", attachment.id)
+                    put("displayName", attachment.displayName)
+                    put("relativePath", attachment.relativePath)
+                    put("mimeType", attachment.mimeType)
+                    put("sizeBytes", attachment.sizeBytes)
+                })
+            }
+        })
+        put("workedMillis", m.workedMillis)
+        put("workItems", JSONArray().apply {
+            m.workItems.forEach { item ->
+                put(JSONObject().apply {
+                    put("title", item.title)
+                    put("detail", item.detail)
+                    put("isComplete", item.isComplete)
+                    put("isCommand", item.isCommand)
+                })
+            }
+        })
+    }
+
+    /** Rewrites the whole chat (one JSON object per line) atomically. */
     @Synchronized
     fun saveMessages(projectId: String, chatId: String, messages: List<ChatMessage>) {
-        val safeProject = safeStorageId(projectId)
-        val safeChat = safeStorageId(chatId)
-        val arr = JSONArray()
-        messages.forEach { m ->
-            arr.put(JSONObject().apply {
-                put("id", m.id)
-                put("fromUser", m.fromUser)
-                put("text", m.text)
-                put("createdAt", m.createdAt.toString())
-                put("attachments", JSONArray().apply {
-                    m.attachments.forEach { attachment ->
-                        put(JSONObject().apply {
-                            put("id", attachment.id)
-                            put("displayName", attachment.displayName)
-                            put("relativePath", attachment.relativePath)
-                            put("mimeType", attachment.mimeType)
-                            put("sizeBytes", attachment.sizeBytes)
-                        })
-                    }
-                })
-                put("workedMillis", m.workedMillis)
-                put("workItems", JSONArray().apply {
-                    m.workItems.forEach { item ->
-                        put(JSONObject().apply {
-                            put("title", item.title)
-                            put("detail", item.detail)
-                            put("isComplete", item.isComplete)
-                            put("isCommand", item.isCommand)
-                        })
-                    }
-                })
-            })
+        val target = messagesFile(projectId, chatId)
+        val content = buildString {
+            messages.forEach { append(serializeMessage(it).toString()).append('\n') }
         }
-        val projectDir = File(chatsDir, safeProject).also { it.mkdirs() }
-        writeAtomically(File(projectDir, "$safeChat.json"), arr.toString())
+        writeAtomically(target, content)
+        legacyMessagesFile(projectId, chatId).delete()
+    }
+
+    /** Appends one message without rewriting the chat; the line is fsynced before returning. */
+    @Synchronized
+    fun appendMessage(projectId: String, chatId: String, message: ChatMessage) {
+        val target = messagesFile(projectId, chatId)
+        if (!target.isFile) {
+            // First append on a chat that still lives in the legacy .json layout: migrate it first.
+            val legacy = legacyMessagesFile(projectId, chatId)
+            if (legacy.isFile) saveMessages(projectId, chatId, readMessagesFile(legacy))
+        }
+        java.io.FileOutputStream(target, true).use { out ->
+            out.write((serializeMessage(message).toString() + "\n").toByteArray(Charsets.UTF_8))
+            out.fd.sync()
+        }
+    }
+
+    /** Replaces the last assistant message (or appends when there is none). */
+    @Synchronized
+    fun replaceLastAssistantMessage(projectId: String, chatId: String, message: ChatMessage) {
+        val messages = loadMessages(projectId, chatId).toMutableList()
+        val index = messages.indexOfLast { !it.fromUser }
+        if (index < 0) {
+            appendMessage(projectId, chatId, message)
+            return
+        }
+        messages[index] = message
+        saveMessages(projectId, chatId, messages)
     }
 
     @Synchronized
     fun loadMessages(projectId: String, chatId: String): List<ChatMessage> {
-        val safeProject = safeStorageId(projectId)
-        val safeChat = safeStorageId(chatId)
-        val file = File(File(chatsDir, safeProject), "$safeChat.json")
-        return loadLegacyMessages(file)
+        val jsonl = messagesFile(projectId, chatId)
+        if (jsonl.isFile) return readMessagesFile(jsonl)
+        val legacy = legacyMessagesFile(projectId, chatId)
+        if (!legacy.isFile) return emptyList()
+        val messages = readMessagesFile(legacy)
+        if (messages.isNotEmpty()) saveMessages(projectId, chatId, messages)
+        return messages
+    }
+
+    @Synchronized
+    fun deleteChatMessages(projectId: String, chatId: String) {
+        messagesFile(projectId, chatId).delete()
+        legacyMessagesFile(projectId, chatId).delete()
     }
 
     @Synchronized
@@ -519,6 +576,24 @@ class AppPreferences(private val context: Context) {
         val safeProject = safeStorageId(projectId)
         File(chatsDir, safeProject).deleteRecursively()
         File(chatsDir, "$safeProject.json").delete()
+    }
+
+    /** Reads a `.jsonl` (one object per line) or legacy `.json` (array) chat file; bad entries are skipped. */
+    private fun readMessagesFile(file: File): List<ChatMessage> {
+        if (!file.exists()) return emptyList()
+        if (file.name.endsWith(".jsonl")) {
+            return runCatching {
+                file.useLines { lines ->
+                    lines.filter(String::isNotBlank)
+                        .mapNotNull { line -> runCatching { parseMessage(JSONObject(line)) }.getOrNull() }
+                        .toList()
+                }
+            }.getOrElse {
+                quarantine(file)
+                emptyList()
+            }
+        }
+        return loadLegacyMessages(file)
     }
 
     private fun loadLegacyMessages(file: File): List<ChatMessage> {
