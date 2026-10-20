@@ -24,6 +24,14 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -240,7 +248,44 @@ fun TerminalScreen(
         }
 
         TerminalKeyRow(modifiers = modifiers, holder = holder, enabled = ready)
+
+        // Command line pinned last, so it floats right above the keyboard (the layout is lifted by
+        // imePadding). Text goes to the running program plus Enter.
+        TerminalCommandBar(enabled = session != null, onSend = viewModel::runTerminalCommand)
     }
+}
+
+@Composable
+private fun TerminalCommandBar(enabled: Boolean, onSend: (String) -> Unit) {
+    var text by rememberSaveable { mutableStateOf("") }
+    val send = {
+        if (text.isNotBlank()) {
+            onSend(text)
+            text = ""
+        }
+    }
+    OutlinedTextField(
+        value = text,
+        onValueChange = { text = it },
+        enabled = enabled,
+        singleLine = true,
+        placeholder = { Text(stringResource(R.string.terminal_input_hint), fontFamily = FontFamily.Monospace, fontSize = ForgeType.secondary) },
+        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = ForgeType.secondary),
+        shape = RoundedCornerShape(100),
+        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+            capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None,
+            autoCorrect = false,
+            imeAction = androidx.compose.ui.text.input.ImeAction.Send,
+        ),
+        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = { send() }),
+        leadingIcon = { Text("$", fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+        trailingIcon = {
+            IconButton(onClick = send, enabled = enabled && text.isNotBlank()) {
+                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = stringResource(R.string.terminal_send))
+            }
+        },
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
+    )
 }
 
 @Composable
