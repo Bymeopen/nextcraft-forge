@@ -1,5 +1,14 @@
 package com.nextcraft.forge.runtime
 
+import android.os.FileObserver
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.charset.StandardCharsets
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+
 /**
  * Deletes this file or directory tree without following symlinks. Kotlin's deleteRecursively() descends into a
  * symlinked directory, so a link an agent made to another project would delete that project's files.
@@ -9,15 +18,6 @@ internal fun java.io.File.deleteRecursivelyNoFollow(): Boolean {
     if (!isLink && isDirectory) listFiles()?.forEach { it.deleteRecursivelyNoFollow() }
     return delete() || (!exists() && !java.nio.file.Files.isSymbolicLink(toPath()))
 }
-
-import android.os.FileObserver
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.io.RandomAccessFile
-import java.nio.ByteBuffer
-import java.nio.charset.StandardCharsets
-import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.TimeUnit
 
 /** Reads at most [maxBytes] from the start of a file without requiring newer Android APIs. */
 internal fun File.readHeadBytes(maxBytes: Int): ByteArray {
