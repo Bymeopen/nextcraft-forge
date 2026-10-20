@@ -26,7 +26,8 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -264,28 +265,26 @@ private fun TerminalCommandBar(enabled: Boolean, onSend: (String) -> Unit) {
             text = ""
         }
     }
-    OutlinedTextField(
-        value = text,
-        onValueChange = { text = it },
-        enabled = enabled,
-        singleLine = true,
-        placeholder = { Text(stringResource(R.string.terminal_input_hint), fontFamily = FontFamily.Monospace, fontSize = ForgeType.secondary) },
-        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = ForgeType.secondary),
-        shape = RoundedCornerShape(100),
-        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-            capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None,
-            autoCorrect = false,
-            imeAction = androidx.compose.ui.text.input.ImeAction.Send,
-        ),
-        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = { send() }),
-        leadingIcon = { Text("$", fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant) },
-        trailingIcon = {
-            IconButton(onClick = send, enabled = enabled && text.isNotBlank()) {
-                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = stringResource(R.string.terminal_send))
-            }
-        },
+    Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
-    )
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        ForgeTextField(
+            value = text,
+            onValueChange = { text = it },
+            modifier = Modifier.weight(1f),
+            placeholder = { Text("$ " + stringResource(R.string.terminal_input_hint), fontFamily = FontFamily.Monospace, fontSize = ForgeType.secondary) },
+            kind = ForgeFieldKind.IDENTIFIER,
+            imeAction = ImeAction.Send,
+            onImeAction = { send() },
+            enabled = enabled,
+            textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = ForgeType.secondary, color = MaterialTheme.colorScheme.onSurface),
+        )
+        IconButton(onClick = send, enabled = enabled && text.isNotBlank()) {
+            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = stringResource(R.string.terminal_send))
+        }
+    }
 }
 
 @Composable
