@@ -93,6 +93,7 @@ internal fun ChatRoutingSheet(state: ForgeUiState, viewModel: MainViewModel, onD
                     selected = routing.mode == mode,
                     onClick = { viewModel.setRouteMode(mode) },
                     horizontalPadding = 0.dp,
+                    subtitleMaxLines = 4,
                 )
             }
             if (routing.mode == RouteMode.SINGLE) {

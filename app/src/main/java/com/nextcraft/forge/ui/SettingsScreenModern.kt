@@ -705,6 +705,7 @@ internal fun RadioRow(
     onClick: () -> Unit,
     mono: Boolean = false,
     horizontalPadding: androidx.compose.ui.unit.Dp = 14.dp,
+    subtitleMaxLines: Int = 2,
 ) {
     val scheme = MaterialTheme.colorScheme
     Row(
@@ -724,7 +725,7 @@ internal fun RadioRow(
                     fontSize = ForgeType.secondary,
                     color = scheme.onSurfaceVariant,
                     fontFamily = if (mono) FontFamily.Monospace else null,
-                    maxLines = 2,
+                    maxLines = subtitleMaxLines,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
