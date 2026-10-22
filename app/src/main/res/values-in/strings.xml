@@ -42,6 +42,7 @@
     <string name="files_files">File</string>
     <string name="files_new_file">File baru</string>
     <string name="files_more">Aksi lainnya</string>
+    <string name="files_empty_title">Belum ada file</string>
     <string name="files_refresh">Muat ulang</string>
     <string name="files_workspace_is_empty_use">Ruang kerja kosong. Gunakan + untuk membuat file atau minta Agen membuat kode awal.</string>
     <string name="files_kb">%1$s KB</string>

@@ -42,6 +42,7 @@
     <string name="files_files">Files</string>
     <string name="files_new_file">New file</string>
     <string name="files_more">More actions</string>
+    <string name="files_empty_title">No files yet</string>
     <string name="files_refresh">Refresh</string>
     <string name="files_workspace_is_empty_use">Workspace is empty. Use + to create a file or ask the Agent to scaffold code.</string>
     <string name="files_kb">%1$s KB</string>
