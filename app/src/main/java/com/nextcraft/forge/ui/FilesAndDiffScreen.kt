@@ -489,12 +489,12 @@ internal fun FilesHeaderCard(
                     DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.files_refresh)) },
-                            leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                            leadingIcon = { ForgeIcon(ForgeGlyph.REFRESH, scheme.onSurfaceVariant) },
                             onClick = { moreOpen = false; onRefresh() },
                         )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.files_download_zip)) },
-                            leadingIcon = { Icon(Icons.Default.KeyboardArrowDown, contentDescription = null) },
+                            leadingIcon = { ForgeIcon(ForgeGlyph.DOWNLOAD, scheme.onSurfaceVariant) },
                             onClick = { moreOpen = false; onToggleSelect() },
                         )
                     }
@@ -701,7 +701,7 @@ internal fun WorkspaceFolderList(
                         if (!entry.isDirectory) {
                             DropdownMenuItem(text = { Text(stringResource(R.string.files_edit_in_terminal)) }, leadingIcon = { ForgeIcon(ForgeGlyph.TERMINAL, scheme.onSurfaceVariant) }, onClick = { menuOpen = false; onEditInTerminal(entry.path) })
                             DropdownMenuItem(text = { Text(stringResource(R.string.files_analyze_rea)) }, leadingIcon = { ForgeIcon(ForgeGlyph.SEARCH, scheme.onSurfaceVariant) }, onClick = { menuOpen = false; onAnalyzeWithRea(entry.path) })
-                            DropdownMenuItem(text = { Text(stringResource(R.string.files_save_copy)) }, leadingIcon = { Icon(Icons.Default.KeyboardArrowDown, contentDescription = null) }, onClick = { menuOpen = false; onSaveCopy(entry.path) })
+                            DropdownMenuItem(text = { Text(stringResource(R.string.files_save_copy)) }, leadingIcon = { ForgeIcon(ForgeGlyph.DOWNLOAD, scheme.onSurfaceVariant) }, onClick = { menuOpen = false; onSaveCopy(entry.path) })
                         }
                         DropdownMenuItem(text = { Text(stringResource(R.string.files_rename)) }, leadingIcon = { ForgeIcon(ForgeGlyph.EDIT, scheme.onSurfaceVariant) }, onClick = { menuOpen = false; onRename(entry.path) })
                         DropdownMenuItem(
