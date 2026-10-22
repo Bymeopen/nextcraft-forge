@@ -469,17 +469,37 @@ internal fun FilesHeaderCard(
                     )
                 }
             }
-            ForgePillIcon(
-                icon = if (selecting) Icons.Default.Close else Icons.Default.KeyboardArrowDown,
-                description = stringResource(if (selecting) R.string.agent_cancel else R.string.files_download_zip),
-                onClick = onToggleSelect,
-                tint = if (selecting) scheme.primary else scheme.onSurface,
-            )
-            ForgePillIcon(
-                icon = Icons.Default.Refresh,
-                description = stringResource(R.string.files_refresh),
-                onClick = onRefresh,
-            )
+            if (selecting) {
+                ForgePillIcon(
+                    icon = Icons.Default.Close,
+                    description = stringResource(R.string.agent_cancel),
+                    onClick = onToggleSelect,
+                    tint = scheme.primary,
+                )
+            } else {
+                // Refresh and "download as zip" were two more bare icons; with text labels in a menu they are clearer
+                // and the row keeps three well-spaced buttons.
+                var moreOpen by remember { mutableStateOf(false) }
+                Box {
+                    ForgePillIcon(
+                        icon = Icons.Default.MoreVert,
+                        description = stringResource(R.string.files_more),
+                        onClick = { moreOpen = true },
+                    )
+                    DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.files_refresh)) },
+                            leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                            onClick = { moreOpen = false; onRefresh() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.files_download_zip)) },
+                            leadingIcon = { Icon(Icons.Default.KeyboardArrowDown, contentDescription = null) },
+                            onClick = { moreOpen = false; onToggleSelect() },
+                        )
+                    }
+                }
+            }
         }
     }
 }
