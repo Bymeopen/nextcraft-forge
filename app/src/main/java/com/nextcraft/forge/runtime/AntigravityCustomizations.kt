@@ -63,7 +63,7 @@ Follow these rules to prevent Gemini API safety/recitation filter false-positive
    - Filter `strings` output strictly to property names (e.g., `grep -E "^(ro|persist|vendor|debug)\.[a-zA-Z0-9_.-]+${'$'}"`) and limit output to `head -n 30`.
 
 2. **Avoid Raw Memory/Register Dumps from Tombstones**:
-   - When inspecting `/data/tombstones/*`, extract only `Timestamp`, `Cmdline`, `Abort message`, `Cause`, and the top 5 backtrace frames (`#00` to `#04`). Do not dump raw register tables (`x0`..`x29`) or raw stack memory hex dumps.
+   - When inspecting `/data/tombstones/`*, extract only `Timestamp`, `Cmdline`, `Abort message`, `Cause`, and the top 5 backtrace frames (`#00` to `#04`). Do not dump raw register tables (`x0`..`x29`) or raw stack memory hex dumps.
 
 3. **Avoid Binary/APK Hex Manipulation**:
    - Prefer declarative Android configuration files (e.g., `/vendor/etc/displayconfig/*.xml`, `resetprop`, `settings`, `device_config`, `init` scripts in `/data/adb/post-fs-data.d/` and `/data/adb/service.d/`) over binary patching of APKs or `.so` files.
@@ -210,7 +210,7 @@ Always obey `/root/.gemini/config/GEMINI.md` when using `android-shell` or `andr
 """.trimIndent() + "\n",
     )
 
-    /** Ensures `~/.gemini/config/GEMINI.md`, `~/.gemini/config/skills/*`, and `~/.gemini/antigravity-cli` settings are up to date in [rootfs]. */
+    /** Ensures `~/.gemini/config/GEMINI.md`, `~/.gemini/config/skills/`*, and `~/.gemini/antigravity-cli` settings are up to date in [rootfs]. */
     fun apply(rootfs: File, guestWorkspacePath: String = "/workspace", write: (File, String) -> Unit) {
         if (!rootfs.isDirectory) return
         val configRoot = File(rootfs, CONFIG_DIR)
