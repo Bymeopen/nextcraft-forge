@@ -166,6 +166,7 @@ internal fun ChangedFilesCard(
     onRevertAll: () -> Unit,
     modifier: Modifier = Modifier,
     onEditInTerminal: (String) -> Unit = {},
+    onAcceptAndCommit: (() -> Unit)? = null,
 ) {
     val tokens = LocalForgeThemeTokens.current
     val scheme = MaterialTheme.colorScheme
@@ -212,6 +213,24 @@ internal fun ChangedFilesCard(
                     shape = RoundedCornerShape(100),
                     modifier = Modifier.weight(1f).heightIn(min = ForgeSpace.minTouch + 4.dp),
                 ) { Text(stringResource(R.string.chat_keep_all), maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            }
+            if (onAcceptAndCommit != null) {
+                OutlinedButton(
+                    onClick = onAcceptAndCommit,
+                    enabled = enabled,
+                    shape = RoundedCornerShape(100),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 8.dp, end = 8.dp, top = 6.dp)
+                        .heightIn(min = ForgeSpace.minTouch),
+                ) {
+                    Text(
+                        stringResource(R.string.diff_accept_and_commit),
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }
@@ -739,6 +758,8 @@ private fun ComposerAutocompletePopover(
             slashMatch != null -> {
                 val commands = listOf(
                     ComposerSuggestion("cmd-build", "/build", "Build & install debug APK", ForgeGlyph.BUILD, "Action", "/build", executeImmediately = true),
+                    ComposerSuggestion("cmd-review", "/review", "Audit uncommitted changes with 2nd agent", ForgeGlyph.SPARK, "Swarm", "/review", executeImmediately = true),
+                    ComposerSuggestion("cmd-memory", "/memory", "Open persistent project memory (.forge/memory.md)", ForgeGlyph.FILE, "Memory", "/memory", executeImmediately = true),
                     ComposerSuggestion("cmd-diff", "/diff", "Open workspace diff & changed files", ForgeGlyph.CODE, "Pane", "/diff", executeImmediately = true),
                     ComposerSuggestion("cmd-branch", "/branch", "Isolate this chat in its own Git branch", ForgeGlyph.SPARK, "Git", "/branch", executeImmediately = true),
                     ComposerSuggestion("cmd-loop", "/loop 30m ", "Repeat a prompt on a schedule (5m–7d)", ForgeGlyph.SPARK, "Timer", "/loop 30m "),

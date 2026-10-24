@@ -79,6 +79,7 @@ internal fun ChatTopBar(
     onBranch: () -> Unit,
     onEnableBranch: () -> Unit,
     onOpenRea: () -> Unit,
+    onOpenMemory: () -> Unit = {},
 ) {
     val scheme = MaterialTheme.colorScheme
     var menuOpen by rememberSaveable { mutableStateOf(false) }
@@ -141,6 +142,7 @@ internal fun ChatTopBar(
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 DropdownMenuItem(text = { Text(stringResource(R.string.chat_menu_rename)) }, onClick = { menuOpen = false; onRename() })
+                DropdownMenuItem(text = { Text(stringResource(R.string.chat_menu_memory)) }, onClick = { menuOpen = false; onOpenMemory() })
                 DropdownMenuItem(text = { Text(stringResource(R.string.chat_menu_usage)) }, onClick = { menuOpen = false; onUsage() })
                 DropdownMenuItem(text = { Text(stringResource(R.string.chat_menu_schedule)) }, onClick = { menuOpen = false; onSchedule() })
                 if (activeChat?.isolated == true) {

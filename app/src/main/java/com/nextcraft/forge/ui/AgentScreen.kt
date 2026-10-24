@@ -222,6 +222,7 @@ fun AgentScreen(
             },
             onEnableBranch = { viewModel.enableChatBranch(state.activeChatId) },
             onOpenRea = { viewModel.selectTab(ForgeTab.REA) },
+            onOpenMemory = viewModel::openProjectMemory,
         )
 
         if (state.agentKind == AgentKind.ANTIGRAVITY &&
@@ -339,6 +340,7 @@ fun AgentScreen(
                                     onKeepAll = viewModel::keepAllChanges,
                                     onRevertAll = viewModel::revertAllChanges,
                                     onEditInTerminal = viewModel::editInTerminal,
+                                    onAcceptAndCommit = viewModel::acceptAndCommitChanges,
                                 )
                             }
                         }
@@ -503,6 +505,7 @@ fun AgentScreen(
                     val changed = state.changedItems.count { it.accepted == null }
                     if (changed > 0) {
                         add(QuickChip(quantityStringResource(R.plurals.chip_review_changes, changed, changed), ForgeGlyph.FILE) { viewModel.selectProjectPane(ProjectPane.FILES) })
+                        add(QuickChip(stringResource(R.string.chip_review_2nd_agent), ForgeGlyph.SPARK) { viewModel.reviewChangesWithSecondAgent() })
                         add(QuickChip(stringResource(R.string.chip_explain_changes), ForgeGlyph.SPARK) { viewModel.sendPrompt(stringOf(R.string.prompt_explain_changes, cameraContext)) })
                     }
                     if (state.activeLocalPorts.isNotEmpty()) {
@@ -922,12 +925,22 @@ internal fun formatWorked(millis: Long): String {
     return if (m > 0) "${m}m ${sec}s" else "${sec}s"
 }
 
-/** One collapsed tool call: status glyph, "Title · detail" on one line, chevron; expands to the full detail. */
+/** One collapsed tool call: status glyph, "Title · detail" on one line, live rolling tail while running, chevron; expands to the full detail. */
 @Composable
 internal fun ToolCallRow(item: ActivityItem) {
     var open by remember { mutableStateOf(false) }
     val scheme = MaterialTheme.colorScheme
     val tokens = LocalForgeThemeTokens.current
+    val startedAtMillis = remember(item.title) { System.currentTimeMillis() }
+    var elapsedSec by remember(item.title) { androidx.compose.runtime.mutableIntStateOf(0) }
+    if (!item.isComplete) {
+        LaunchedEffect(item.title) {
+            while (true) {
+                kotlinx.coroutines.delay(1_000)
+                elapsedSec = ((System.currentTimeMillis() - startedAtMillis) / 1_000L).toInt().coerceAtLeast(0)
+            }
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -960,6 +973,16 @@ internal fun ToolCallRow(item: ActivityItem) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            if (!item.isComplete && elapsedSec > 0) {
+                val timerText = formatWorked(elapsedSec * 1_000L)
+                Text(
+                    text = timerText,
+                    fontSize = ForgeType.caption,
+                    color = tokens.warningText,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.padding(horizontal = 6.dp),
+                )
+            }
             val reduceMotion = rememberReduceMotion()
             val rotation by animateFloatAsState(
                 targetValue = if (open) 180f else 0f,
@@ -973,17 +996,25 @@ internal fun ToolCallRow(item: ActivityItem) {
                 modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = rotation },
             )
         }
+        val showBody = (open || !item.isComplete) && item.detail.isNotBlank()
+        val displayDetail = if (open || item.isComplete) {
+            item.detail
+        } else {
+            item.detail.lineSequence().filter { it.isNotBlank() }.toList().takeLast(3).joinToString("\n").ifBlank { item.detail }
+        }
         AnimatedVisibility(
-            visible = open && item.detail.isNotBlank(),
+            visible = showBody,
             enter = expandVertically(tween(ForgeMotion.EXPAND_MS)) + fadeIn(tween(ForgeMotion.FADE_MS)),
             exit = shrinkVertically(tween(ForgeMotion.FADE_MS)) + fadeOut(tween(ForgeMotion.FADE_MS / 2)),
         ) {
             Text(
-                text = item.detail,
+                text = displayDetail,
                 fontSize = ForgeType.secondary,
                 lineHeight = 18.sp,
                 color = tokens.terminalText,
                 fontFamily = if (item.isCommand) FontFamily.Monospace else FontFamily.Default,
+                maxLines = if (open) Int.MAX_VALUE else 3,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 8.dp)

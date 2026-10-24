@@ -1550,4 +1550,9 @@
     <string name="agent_auto_retry_notice">إعادة المحاولة تلقائيًا مرة واحدة…</string>
     <string name="hud_live_title">محرك النشاط المباشر</string>
     <string name="hud_live_empty">انتهت جميع الوكلاء وعمليات البناء في الخلفية.</string>
+    <string name="launch_fix_auto_rebuild">إصلاح وإعادة البناء تلقائياً</string>
+    <string name="logcat_fix_crash_with_agent">إصلاح التعطل بواسطة الوكيل</string>
+    <string name="chip_review_2nd_agent">مراجعة بواسطة وكيل ثانٍ</string>
+    <string name="chat_menu_memory">ذاكرة المشروع (.forge/memory.md)</string>
+    <string name="diff_accept_and_commit">قبول والتزام (Commit)</string>
 </resources>

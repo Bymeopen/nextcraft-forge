@@ -1510,4 +1510,9 @@
     <string name="agent_auto_retry_notice">Автоматическая повторная попытка…</string>
     <string name="hud_live_title">Движок живой активности</string>
     <string name="hud_live_empty">Все фоновые агенты и сборки завершены.</string>
+    <string name="launch_fix_auto_rebuild">Исправить и пересобрать</string>
+    <string name="logcat_fix_crash_with_agent">Исправить сбой с агентом</string>
+    <string name="chip_review_2nd_agent">Ревью вторым агентом</string>
+    <string name="chat_menu_memory">Память проекта (.forge/memory.md)</string>
+    <string name="diff_accept_and_commit">Принять и закоммитить</string>
 </resources>

@@ -1450,4 +1450,9 @@
     <string name="agent_auto_retry_notice">正在自动重试一次…</string>
     <string name="hud_live_title">实时活动引擎</string>
     <string name="hud_live_empty">所有后台代理和构建已完成。</string>
+    <string name="launch_fix_auto_rebuild">修复并自动重新构建</string>
+    <string name="logcat_fix_crash_with_agent">让智能体修复崩溃</string>
+    <string name="chip_review_2nd_agent">用第二个智能体审查</string>
+    <string name="chat_menu_memory">项目记忆 (.forge/memory.md)</string>
+    <string name="diff_accept_and_commit">接受并提交</string>
 </resources>
