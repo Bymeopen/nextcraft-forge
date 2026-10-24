@@ -103,8 +103,8 @@ class AppPreferences(private val context: Context) {
         set(value) { preferences.edit().putString("primary_agent_kind", value).apply() }
 
     var antigravityModel: String
-        get() = preferences.getString("agent_antigravity_model", "gemini-4-argon-low")
-            ?.takeIf { it.isNotBlank() } ?: "gemini-4-argon-low"
+        get() = preferences.getString("agent_antigravity_model", "claude-sonnet-5-5-low")
+            ?.takeIf { it.isNotBlank() } ?: "claude-sonnet-5-5-low"
         set(value) { preferences.edit().putString("agent_antigravity_model", value).apply() }
 
     /** Email of the signed-in Claude account, remembered so the account card shows it before `claude auth status` answers. */

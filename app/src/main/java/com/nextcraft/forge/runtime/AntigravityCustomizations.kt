@@ -218,6 +218,10 @@ Always obey `/root/.gemini/config/GEMINI.md` when using `android-shell` or `andr
         if (runCatching { geminiMd.takeIf { it.isFile }?.readText() }.getOrNull() != GLOBAL_GEMINI_MD) {
             runCatching { write(geminiMd, GLOBAL_GEMINI_MD) }
         }
+        val outsideProject = File(File(configRoot, "projects"), "outside-of-project.json")
+        if (!outsideProject.isFile) {
+            runCatching { write(outsideProject, """{"id":"outside-of-project","name":"Outside of Project","projectResources":{}}""" + "\n") }
+        }
         val skillsRoot = File(configRoot, "skills")
         for ((name, content) in SKILLS) {
             val skillFile = File(File(skillsRoot, name), "SKILL.md")

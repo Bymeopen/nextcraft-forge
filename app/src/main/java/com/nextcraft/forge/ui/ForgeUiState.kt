@@ -223,7 +223,7 @@ data class ForgeUiState(
     val updateNotifications: Boolean = true,
     val autoInstallUpdates: Boolean = true,
     val autoBranchChats: Boolean = false,
-    val antigravityModel: String = "gemini-4-argon-low",
+    val antigravityModel: String = "claude-sonnet-5-5-low",
     val antigravityEffort: String = "low",
     val claudeEffort: String = "",
     /** Branch status of the chats that work in their own branch, by chat id. */
