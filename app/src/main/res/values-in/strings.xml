@@ -1457,4 +1457,9 @@
     <string name="agent_auto_retry_notice">Mencoba ulang otomatis sekali…</string>
     <string name="hud_live_title">Mesin Aktivitas Live</string>
     <string name="hud_live_empty">Semua agen dan build latar belakang telah selesai.</string>
+    <string name="launch_fix_auto_rebuild">Perbaiki &amp; Bangun Ulang Otomatis</string>
+    <string name="logcat_fix_crash_with_agent">Perbaiki Crash dengan Agen</string>
+    <string name="chip_review_2nd_agent">Review dengan Agen ke-2</string>
+    <string name="chat_menu_memory">Memori proyek (.forge/memory.md)</string>
+    <string name="diff_accept_and_commit">Terima &amp; Commit</string>
 </resources>

@@ -278,17 +278,32 @@ fun AndroidBuildScreen(
                     .height(3.dp),
             )
         }
-        if (build.phase == AndroidBuildPhase.FAILED && build.issues.isNotEmpty()) {
-            ForgePrimaryButton(
-                text = stringResource(R.string.launch_fix_with_agent),
-                onClick = {
-                    viewModel.sendPrompt(build.issues.joinToString("\n\n") { it.formatForAgentPrompt() })
-                    viewModel.openConversation()
-                },
+        if (build.phase == AndroidBuildPhase.FAILED && (build.issues.isNotEmpty() || build.log.isNotBlank())) {
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 8.dp),
-            )
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ForgePrimaryButton(
+                    text = stringResource(R.string.launch_fix_with_agent),
+                    onClick = { viewModel.fixBuildWithAgent(autoRebuild = false) },
+                    modifier = Modifier.weight(1f),
+                )
+                OutlinedButton(
+                    onClick = { viewModel.fixBuildWithAgent(autoRebuild = true) },
+                    shape = RoundedCornerShape(100),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.launch_fix_auto_rebuild),
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                }
+            }
         } else if (build.phase == AndroidBuildPhase.SUCCEEDED && build.apkPath != null) {
             ForgePrimaryButton(
                 text = stringResource(R.string.launch_install_apk),
@@ -393,6 +408,7 @@ fun AndroidBuildScreen(
                 onClearLogcat = viewModel::clearProjectLogcat,
                 onSetMinLevel = viewModel::setLogcatMinimumLevel,
                 onSetQuery = viewModel::setLogcatQuery,
+                onFixCrashWithAgent = viewModel::fixLogcatCrashWithAgent,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -494,10 +510,14 @@ private fun LogcatPanel(
     onClearLogcat: () -> Unit,
     onSetMinLevel: (AndroidLogLevel) -> Unit,
     onSetQuery: (String) -> Unit,
+    onFixCrashWithAgent: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val logcat = state.androidLogcat
     val tokens = LocalForgeThemeTokens.current
+    val hasCrashOrError = remember(logcat.lines) {
+        logcat.lines.any { it.level == AndroidLogLevel.ERROR || it.level == AndroidLogLevel.FATAL }
+    }
     val filteredLines = remember(logcat.lines, logcat.minimumLevel, logcat.query) {
         val q = logcat.query.trim()
         logcat.lines.filter { line ->
@@ -545,6 +565,14 @@ private fun LogcatPanel(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (hasCrashOrError) {
+                Button(
+                    onClick = onFixCrashWithAgent,
+                    shape = RoundedCornerShape(100),
+                ) {
+                    Text(stringResource(R.string.logcat_fix_crash_with_agent), fontWeight = FontWeight.SemiBold)
+                }
+            }
             AndroidLogLevel.entries.forEach { level ->
                 FilterChip(
                     selected = logcat.minimumLevel == level,

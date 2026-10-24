@@ -47,6 +47,7 @@ internal fun codeSpanStyle(kind: CodeTokenKind, tokens: ForgeThemeTokens): SpanS
     CodeTokenKind.NUMBER -> SpanStyle(color = tokens.accentText)
     // Comments are italic and a step quieter; the colour alone is never the cue.
     CodeTokenKind.COMMENT -> SpanStyle(color = tokens.terminalText.copy(alpha = 0.78f), fontStyle = FontStyle.Italic)
+    CodeTokenKind.ANNOTATION -> SpanStyle(color = tokens.warningText, fontWeight = FontWeight.Medium)
 }
 
 internal fun highlightLine(text: String, language: CodeLanguage, tokens: ForgeThemeTokens): AnnotatedString {

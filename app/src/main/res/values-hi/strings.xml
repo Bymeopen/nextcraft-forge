@@ -1470,4 +1470,9 @@
     <string name="agent_auto_retry_notice">अपने आप एक बार फिर से कोशिश की जा रही है…</string>
     <string name="hud_live_title">लाइव गतिविधि इंजन</string>
     <string name="hud_live_empty">सभी पृष्ठभूमि एजेंट और बिल्ड समाप्त हो गए हैं।</string>
+    <string name="launch_fix_auto_rebuild">ठीक करें और स्वतः रीबिल्ड करें</string>
+    <string name="logcat_fix_crash_with_agent">एजेंट से क्रैश ठीक कराएँ</string>
+    <string name="chip_review_2nd_agent">दूसरे एजेंट से समीक्षा करें</string>
+    <string name="chat_menu_memory">प्रोजेक्ट मेमोरी (.forge/memory.md)</string>
+    <string name="diff_accept_and_commit">स्वीकार करें और कमिट करें</string>
 </resources>

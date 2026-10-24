@@ -1476,4 +1476,9 @@
     <string name="agent_auto_retry_notice">Retrying automatically once…</string>
     <string name="hud_live_title">Live Activity Engine</string>
     <string name="hud_live_empty">All background agents and builds have finished.</string>
+    <string name="launch_fix_auto_rebuild">Fix &amp; Auto-Rebuild</string>
+    <string name="logcat_fix_crash_with_agent">Fix Crash with Agent</string>
+    <string name="chip_review_2nd_agent">Review with 2nd Agent</string>
+    <string name="chat_menu_memory">Project memory (.forge/memory.md)</string>
+    <string name="diff_accept_and_commit">Accept &amp; Commit</string>
 </resources>

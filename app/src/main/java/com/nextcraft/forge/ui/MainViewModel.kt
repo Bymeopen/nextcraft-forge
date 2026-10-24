@@ -1837,7 +1837,151 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(bannerMessage = UiText.res(R.string.schedule_agent_changed)) }
     }
 
-    /** Handles quick slash commands (/build, /branch, /diff, /terminal, /clear) typed in the chat composer. */
+    /** Projects waiting for an automatic APK rebuild & install right after the agent finishes fixing a build error. */
+    private val autoRebuildProjects = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    /** Prepend `<workspace>/.forge/memory.md` (if present and non-blank, up to 4 KB) to the prompt context. */
+    private fun augmentWithProjectMemory(projectId: String, prompt: String): String {
+        val memText = runCatching {
+            val ws = checkpoints.ensureWorkspace(projectId)
+            val memFile = checkpoints.safeWorkspaceFile(ws, ".forge/memory.md")
+            if (memFile.isFile) memFile.readBoundedText(4096).trim() else ""
+        }.getOrDefault("")
+        if (memText.isEmpty()) return prompt
+        return buildString {
+            append("[Project Memory (.forge/memory.md) — persistent architectural & build notes for this project. You may append new notes by outputting `[[memory: concise note]]`]:\n")
+            append(memText)
+            append("\n\n---\n\n")
+            append(prompt)
+        }
+    }
+
+    /** Appends any `[[memory: ...]]` directives emitted by the agent into `<workspace>/.forge/memory.md`. */
+    private fun applyAgentProjectMemory(run: ChatRun) {
+        applyPendingText(run)
+        val reply = run.messages.lastOrNull { !it.fromUser }?.text.orEmpty()
+        val notes = Regex("""\[\[\s*memory\s*:\s*([^\]]+?)\s*]]""", RegexOption.IGNORE_CASE)
+            .findAll(reply)
+            .map { it.groupValues[1].trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+        if (notes.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val ws = checkpoints.ensureWorkspace(run.projectId)
+                val memFile = checkpoints.safeWorkspaceFile(ws, ".forge/memory.md")
+                memFile.parentFile?.mkdirs()
+                val existing = if (memFile.isFile) memFile.readBoundedText(16 * 1024) else "# Project Memory\n"
+                val additions = notes.filterNot { existing.contains(it) }.joinToString("\n") { "- $it" }
+                if (additions.isNotEmpty()) {
+                    val updated = existing.trimEnd() + "\n" + additions + "\n"
+                    memFile.writeText(updated)
+                }
+            }
+        }
+    }
+
+    /** Opens `.forge/memory.md` in the project file editor, creating a starter template if it does not exist yet. */
+    fun openProjectMemory() {
+        val project = _state.value.activeProject ?: return
+        val path = ".forge/memory.md"
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val ws = checkpoints.ensureWorkspace(project.id)
+                    val target = checkpoints.safeWorkspaceFile(ws, path)
+                    target.parentFile?.mkdirs()
+                    if (!target.exists()) {
+                        target.writeText(
+                            "# ${project.name} — Project Memory\n\n" +
+                                "- Key architecture, build flags, and conventions remembered across all chats.\n" +
+                                "- Agents can also append notes using `[[memory: note]]`.\n",
+                        )
+                    }
+                }
+            }
+            refreshWorkspaceFilesAndChanges(project.id)
+            openWorkspaceFile(path)
+            selectProjectPane(ProjectPane.FILES)
+        }
+    }
+
+    /** Sends the current Android build failure (parsed issues or raw Gradle tail log) to the coding agent, optionally scheduling an automatic rebuild on completion. */
+    fun fixBuildWithAgent(autoRebuild: Boolean = false) {
+        val project = _state.value.activeProject ?: return
+        val build = _state.value.androidBuild
+        if (autoRebuild) autoRebuildProjects.add(project.id)
+        val prompt = if (build.issues.isNotEmpty()) {
+            build.issues.joinToString("\n\n") { it.formatForAgentPrompt() }
+        } else {
+            val tailLog = build.log.lineSequence().toList().takeLast(65).joinToString("\n")
+            "Fix this Android Gradle build failure in project `${project.name}`:\n\n```text\n$tailLog\n```"
+        }
+        sendPrompt(prompt)
+        openConversation()
+    }
+
+    /** Sends the latest ERROR / FATAL logcat crash lines of the active project to the coding agent and opens the chat. */
+    fun fixLogcatCrashWithAgent() {
+        val logcat = _state.value.androidLogcat
+        val errorLines = logcat.lines.filter {
+            it.level == AndroidLogLevel.ERROR || it.level == AndroidLogLevel.FATAL
+        }.takeLast(45)
+        if (errorLines.isEmpty()) return
+        val pkg = logcat.packageName ?: _state.value.activeProject?.name ?: "app"
+        val trace = errorLines.joinToString("\n") { it.text }
+        val prompt = "Fix this Android runtime crash / error from Logcat (`$pkg`):\n\n```text\n$trace\n```"
+        sendPrompt(prompt)
+        openConversation()
+    }
+
+    /** Invokes a secondary ready agent (or senior reviewer pass) to audit the uncommitted workspace diff. */
+    fun reviewChangesWithSecondAgent() {
+        val pending = _state.value.changedItems.filter { it.accepted == null }
+        if (pending.isEmpty()) return
+        val currentPrimary = AgentRouter.primaryAgent(_state.value.routing, _state.value.agentKind, _state.value.readyAgents)
+        val secondary = (_state.value.readyAgents - currentPrimary).firstOrNull()
+        val tagPrefix = when (secondary) {
+            AgentKind.CLAUDE_CODE -> "@claude "
+            AgentKind.ANTIGRAVITY -> "@agy "
+            AgentKind.DEEPSEEK_HARNESS -> "@deepseek "
+            null -> ""
+        }
+        if (secondary != null && _state.value.routing.mode == RouteMode.SINGLE) {
+            setRouteMode(RouteMode.MANUAL)
+        }
+        val filesSummary = pending.take(10).joinToString("\n") { item ->
+            val preview = item.diffLines.take(20).joinToString("\n") { line ->
+                val sign = when (line.type) {
+                    com.nextcraft.forge.model.DiffLineType.ADDITION -> "+"
+                    com.nextcraft.forge.model.DiffLineType.DELETION -> "-"
+                    else -> " "
+                }
+                "$sign${line.text}"
+            }
+            "### `${item.path}` (+${item.additions} / -${item.deletions})\n```diff\n$preview\n```"
+        }
+        val prompt = "${tagPrefix}Perform a concise senior code review of the uncommitted changes in this workspace. " +
+            "Check for bugs, regressions, edge cases, and concurrency or UI issues:\n\n$filesSummary"
+        sendPrompt(prompt)
+    }
+
+    /** Accepts all pending checkpoint changes and immediately commits them to the project's Git repository. */
+    fun acceptAndCommitChanges() {
+        val project = _state.value.activeProject ?: return
+        val pending = _state.value.changedItems.filter { it.accepted == null }
+        if (pending.isEmpty()) return
+        val fileNames = pending.take(3).joinToString(", ") { it.path.substringAfterLast('/') }
+        val more = if (pending.size > 3) " +${pending.size - 3} more" else ""
+        val commitMsg = "Apply agent changes ($fileNames$more)"
+        viewModelScope.launch {
+            workspaceIo(str(R.string.err_ws_keep)) { checkpoints.acceptAll(project.id) } ?: return@launch
+            refreshWorkspaceFilesAndChanges(project.id)
+            commitProjectRepo(commitMsg)
+        }
+    }
+
+    /** Handles quick slash commands (/build, /branch, /diff, /terminal, /clear, /memory, /review) typed in the chat composer. */
     private fun handleQuickSlashCommand(text: String): Boolean {
         val cmd = text.trim().lowercase()
         val chatId = _state.value.activeChatId
@@ -1857,6 +2001,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             "/terminal" -> {
                 selectProjectPane(ProjectPane.TERMINAL)
+                true
+            }
+            "/memory" -> {
+                openProjectMemory()
+                true
+            }
+            "/review" -> {
+                reviewChangesWithSecondAgent()
                 true
             }
             "/clear" -> {
@@ -2141,8 +2293,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Binary-related messages also tell the agent that `rea` exists (only when REA is installed).
         val reaInstalled = preferences.reaChatHint &&
             com.nextcraft.forge.runtime.RuntimeMarkers.read(File(RuntimeInstaller.rootfsDir(getApplication()), "root/.nextcraft-rea-version")) != null
+        val promptWithMemory = augmentWithProjectMemory(project.id, basePrompt)
         val agentPrompt = ScheduleDirectives.augment(
-            com.nextcraft.forge.runtime.AndroidHostTools.augment(ReaChatHint.augment(basePrompt, attachments, reaInstalled), preferences.androidHostTools),
+            com.nextcraft.forge.runtime.AndroidHostTools.augment(ReaChatHint.augment(promptWithMemory, attachments, reaInstalled), preferences.androidHostTools),
             preferences.scheduleEnabled,
         )
         val assistantPlaceholder = ChatMessage(
@@ -2586,6 +2739,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             is RuntimeEvent.SessionCompleted -> {
                 finishRun(run)
                 applyAgentSchedule(run)
+                applyAgentProjectMemory(run)
+                if (autoRebuildProjects.remove(run.projectId)) {
+                    projectOf(run.projectId)?.let { proj ->
+                        if (_state.value.activeProjectId == proj.id) {
+                            _state.update { it.copy(activeTab = ForgeTab.ANDROID) }
+                        }
+                        runAndroidBuild("assembleDebug", installAfterBuild = true)
+                    }
+                }
                 // Wait for the bridge call to fully unwind so the next turn cannot race its shared state.
                 viewModelScope.launch {
                     run.job?.join()
