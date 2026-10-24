@@ -1468,4 +1468,6 @@
     <string name="restore_restart">अभी फिर से शुरू करें</string>
     <string name="backup_busy">पहले चल रहे एजेंट या टर्मिनल कमांड को रोकें।</string>
     <string name="agent_auto_retry_notice">अपने आप एक बार फिर से कोशिश की जा रही है…</string>
+    <string name="hud_live_title">लाइव गतिविधि इंजन</string>
+    <string name="hud_live_empty">सभी पृष्ठभूमि एजेंट और बिल्ड समाप्त हो गए हैं।</string>
 </resources>

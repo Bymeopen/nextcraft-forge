@@ -1455,4 +1455,6 @@
     <string name="restore_restart">Mulai ulang sekarang</string>
     <string name="backup_busy">Hentikan agent atau perintah terminal yang sedang berjalan dulu.</string>
     <string name="agent_auto_retry_notice">Mencoba ulang otomatis sekali…</string>
+    <string name="hud_live_title">Mesin Aktivitas Live</string>
+    <string name="hud_live_empty">Semua agen dan build latar belakang telah selesai.</string>
 </resources>

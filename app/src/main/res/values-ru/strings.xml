@@ -1508,4 +1508,6 @@
     <string name="restore_restart">Перезапустить</string>
     <string name="backup_busy">Сначала остановите работающего агента или команду терминала.</string>
     <string name="agent_auto_retry_notice">Автоматическая повторная попытка…</string>
+    <string name="hud_live_title">Движок живой активности</string>
+    <string name="hud_live_empty">Все фоновые агенты и сборки завершены.</string>
 </resources>
