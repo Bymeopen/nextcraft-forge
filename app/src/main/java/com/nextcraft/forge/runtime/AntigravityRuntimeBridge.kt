@@ -247,6 +247,34 @@ class AntigravityRuntimeBridge(
         }.apply { isDaemon = true }.start()
     }
 
+    /**
+     * Reaps orphaned `/root/.local/bin/agy --input-format stream-json` processes whose parent died (PPID == 1) and
+     * trims CLI logs older than 3 days.
+     */
+    private fun reapOrphanedAgyProcessesAndOldLogs() {
+        Thread({
+            runCatching {
+                val script = "for p in \$(pgrep -f '[/]root/[.]local/bin/agy.*--input-format stream-json' 2>/dev/null); do " +
+                    "ppid=\$(awk '/^PPid:/{print \$2}' /proc/\$p/status 2>/dev/null); " +
+                    "[ \"\$ppid\" = \"1\" ] && kill -9 \$p 2>/dev/null; done; true"
+                val proc = ProcessBuilder("su", "-c", script)
+                    .redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.to(File("/dev/null")))
+                    .start()
+                if (!proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) proc.destroyForcibly()
+            }.onFailure { com.nextcraft.forge.runtime.ErrorLog.swallowed("AntigravityRuntimeBridge", it) }
+            runCatching {
+                val cutoff = System.currentTimeMillis() - 3L * 24 * 60 * 60 * 1_000L
+                val logDir = File(installer.installedRuntime().rootfs, "root/.gemini/antigravity-cli/log")
+                logDir.listFiles()?.forEach { file ->
+                    if (file.isFile && file.name.startsWith("cli-") && file.lastModified() < cutoff) {
+                        file.delete()
+                    }
+                }
+            }.onFailure { com.nextcraft.forge.runtime.ErrorLog.swallowed("AntigravityRuntimeBridge", it) }
+        }, "forge-agy-orphan-reaper").apply { isDaemon = true }.start()
+    }
+
     /** An idle warm agy holds memory in the chroot; let it go after a while without messages. */
     private fun scheduleWarmExpiry(entry: WarmAgy) {
         val generation = ++warmGeneration
@@ -437,7 +465,10 @@ class AntigravityRuntimeBridge(
                 warmSupported == true && it.process.isAlive && it.projectId == projectId &&
                     it.model == currentModel && it.effort == currentEffort && it.conversationId == currentConversation
             }
-            if (reuse == null) closeWarm(previous)
+            if (reuse == null) {
+                closeWarm(previous)
+                reapOrphanedAgyProcessesAndOldLogs()
+            }
             val process: Process
             val tailer: InotifyLogTailer
             if (reuse != null) {
@@ -530,7 +561,7 @@ class AntigravityRuntimeBridge(
             }
             run {
                 outputLoop@ while (process.isAlive || tailer.hasUnreadBytes()) {
-                    val lines = tailer.readLines(timeoutMs = 50L)
+                    val lines = tailer.readLines(timeoutMs = 250L)
                     if (lines.isEmpty()) {
                         val now = System.currentTimeMillis()
                         if (stdinOpen && !eventSeen && now - promptSentAtMillis >= WARM_PROBE_MS) {
@@ -829,8 +860,8 @@ private const val WARM_REUSE_QUIET_MS = 90_000L
 /** Upper bound for a kept-alive agy that shows no event at all, however active its log looks. */
 private const val WARM_REUSE_MAX_WAIT_MS = 10 * 60_000L
 
-/** A kept-alive agy is stopped after this long without a message. */
-private const val WARM_IDLE_MS = 10 * 60_000L
+/** A kept-alive agy is stopped after this long without a message (3 min balances warm reuse vs ~400 MB RSS). */
+private const val WARM_IDLE_MS = 3 * 60_000L
 
 private const val ANTIGRAVITY_GENERIC_FAILURE = "Antigravity could not complete the task."
 
