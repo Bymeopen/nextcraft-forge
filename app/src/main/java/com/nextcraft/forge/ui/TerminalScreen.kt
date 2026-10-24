@@ -170,6 +170,8 @@ fun TerminalScreen(
             },
         )
 
+        LiveResourceMiniBar(onCleanIdleDaemons = viewModel::cleanIdleDaemons)
+
         // The emulator fills the space; the shell is resized to it (and to the keyboard) automatically.
         Box(
             modifier = Modifier

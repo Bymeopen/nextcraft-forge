@@ -167,6 +167,7 @@ internal fun ChangedFilesCard(
     modifier: Modifier = Modifier,
     onEditInTerminal: (String) -> Unit = {},
     onAcceptAndCommit: (() -> Unit)? = null,
+    onRevertHunk: ((String, Int) -> Unit)? = null,
 ) {
     val tokens = LocalForgeThemeTokens.current
     val scheme = MaterialTheme.colorScheme
@@ -195,7 +196,7 @@ internal fun ChangedFilesCard(
                 DiffCounts(adds, dels)
             }
             changes.forEach { change ->
-                ChangedFileRow(change, enabled, onOpenFile, onKeepFile, onRevertFile, onEditInTerminal)
+                ChangedFileRow(change, enabled, onOpenFile, onKeepFile, onRevertFile, onEditInTerminal, onRevertHunk)
             }
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
@@ -255,6 +256,7 @@ private fun ChangedFileRow(
     onKeepFile: (String) -> Unit,
     onRevertFile: (String) -> Unit,
     onEditInTerminal: (String) -> Unit,
+    onRevertHunk: ((String, Int) -> Unit)? = null,
 ) {
     var open by remember { mutableStateOf(false) }
     val scheme = MaterialTheme.colorScheme
@@ -325,7 +327,12 @@ private fun ChangedFileRow(
                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
                     )
                 } else {
-                    DiffCodeView(lines = change.diffLines, path = change.path, previewLines = DIFF_PREVIEW_LINES)
+                    DiffCodeView(
+                        lines = change.diffLines,
+                        path = change.path,
+                        previewLines = DIFF_PREVIEW_LINES,
+                        onRevertHunk = if (enabled && onRevertHunk != null) ({ idx -> onRevertHunk(change.path, idx) }) else null,
+                    )
                 }
                 // Two fixed rows instead of one wrapping row, so no button is ever orphaned: ways to look at the file on top,
                 // the decision (revert / keep) below with the primary action on the right.
@@ -514,6 +521,9 @@ internal fun ChatComposer(
     listening: Boolean = false,
     /** 0..1 loudness while [listening]; the mic pulses with it. */
     micLevel: Float = 0f,
+    /** When true, voice dictation automatically sends the prompt as soon as the user finishes speaking. */
+    handsFreeSend: Boolean = false,
+    onToggleHandsFree: (() -> Unit)? = null,
     /** "Create image" entry of the attach menu (Nano Banana); null hides it. */
     onGenerateImage: (() -> Unit)? = null,
     /** Workspace files and ready agents for inline `@file`, `@agent`, and `/slash` autocomplete popover. */
@@ -526,6 +536,54 @@ internal fun ChatComposer(
     var attachMenuOpen by remember { mutableStateOf(false) }
     val composerLabel = stringResource(R.string.agent_message_placeholder, agentName)
     Column(modifier = Modifier.fillMaxWidth()) {
+    AnimatedVisibility(visible = listening) {
+        Surface(
+            shape = RoundedCornerShape(100),
+            color = tokens.cardElevatedColor,
+            border = tokens.cardBorderStroke,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 2.dp),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.error),
+                )
+                Text(
+                    text = stringResource(R.string.voice_handsfree_hint),
+                    fontSize = ForgeType.caption,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (onToggleHandsFree != null) {
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = if (handsFreeSend) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .clickable(role = Role.Button, onClick = onToggleHandsFree),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.voice_auto_send_toggle),
+                            fontSize = ForgeType.caption,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (handsFreeSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
     ComposerAutocompletePopover(
         promptInput = promptInput,
         workspaceFiles = workspaceFiles,

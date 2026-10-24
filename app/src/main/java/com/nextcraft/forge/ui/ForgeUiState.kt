@@ -265,6 +265,9 @@ data class ForgeUiState(
     val retryPrompts: Map<String, RetryPrompt> = emptyMap(),
     /** Set while a deleted project can still be restored; the UI shows a Snackbar with Undo. */
     val undoDelete: ProjectUndo? = null,
+    /** Parsed Android UI hierarchy nodes for the Visual UI Inspector & Tap-to-Edit mode in Preview. */
+    val uiInspectorNodes: List<UiInspectorNode> = emptyList(),
+    val uiInspectorBusy: Boolean = false,
 )
  {
     val activeProject: Project?
@@ -273,6 +276,18 @@ data class ForgeUiState(
     /** True while the open chat has its own agent turn running (drives its Stop button, status line and composer). */
     val activeChatRunning: Boolean get() = activeChatId in runningChatIds
 }
+
+/** One interactive/visible Android UI node dumped via uiautomator for Visual Tap-to-Edit with Agent. */
+data class UiInspectorNode(
+    val id: String,
+    val className: String,
+    val text: String,
+    val bounds: String,
+    val left: Int,
+    val top: Int,
+    val right: Int,
+    val bottom: Int,
+)
 
 /** [chatId] keeps the offer in the chat where the failure happened. */
 data class RetryPrompt(val chatId: String, val prompt: QueuedPrompt)
