@@ -3550,6 +3550,111 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun revertDiffHunk(path: String, hunkIndex: Int) {
+        val project = _state.value.activeProject ?: return
+        if (runs.keys.any { it.projectId == project.id }) return
+        viewModelScope.launch {
+            workspaceIo(str(R.string.err_ws_revert_file, path)) {
+                val ws = checkpoints.ensureWorkspace(project.id)
+                checkpoints.revertHunk(project.id, ws, path, hunkIndex)
+            } ?: return@launch
+            refreshWorkspaceFilesAndChanges(project.id)
+            if (_state.value.selectedFilePath == path) {
+                loadWorkspaceFile(path)
+            }
+        }
+    }
+
+    fun cleanIdleDaemons() {
+        com.nextcraft.forge.runtime.GradleDaemonReaper.stopIdleNow {
+            _state.update { it.copy(bannerMessage = UiText.res(R.string.resource_daemons_cleaned)) }
+        }
+    }
+
+    fun fixCiFailureWithAgent(workflowName: String, branch: String, url: String) {
+        val prompt = buildString {
+            append("GitHub Actions workflow '").append(workflowName).append("' failed on branch '").append(branch).append("'")
+            if (url.isNotBlank()) append(" (").append(url).append(")")
+            append(".\nPlease inspect the workspace code, build configuration, and unit tests to diagnose and fix the CI failure.")
+        }
+        sendPrompt(prompt)
+        openConversation()
+    }
+
+    fun captureUiInspectorHierarchy() {
+        if (_state.value.uiInspectorBusy) return
+        _state.update { it.copy(uiInspectorBusy = true) }
+        viewModelScope.launch {
+            val nodes = withContext(Dispatchers.IO) {
+                runCatching {
+                    val proc = ProcessBuilder(
+                        "su",
+                        "-c",
+                        "uiautomator dump /sdcard/forge_ui_dump.xml >/dev/null 2>&1 && cat /sdcard/forge_ui_dump.xml",
+                    ).redirectErrorStream(true).start()
+                    val xml = proc.inputStream.bufferedReader().readText()
+                    if (!proc.waitFor(12, java.util.concurrent.TimeUnit.SECONDS)) proc.destroyForcibly()
+                    parseUiInspectorXml(xml)
+                }.getOrDefault(emptyList())
+            }
+            _state.update { it.copy(uiInspectorNodes = nodes, uiInspectorBusy = false) }
+        }
+    }
+
+    fun editUiElementWithAgent(node: UiInspectorNode, instruction: String) {
+        val cleanInstruction = instruction.trim()
+        if (cleanInstruction.isEmpty()) return
+        val prompt = buildString {
+            append("Please update this UI element in the project:\n")
+            append("- Class: `").append(node.className).append("`\n")
+            if (node.id.isNotBlank()) append("- Resource ID / Tag: `").append(node.id).append("`\n")
+            if (node.text.isNotBlank()) append("- Visible Text / Content Description: \"").append(node.text).append("\"\n")
+            append("- Screen Bounds: `").append(node.bounds).append("`\n\n")
+            append("Requested change: ").append(cleanInstruction)
+        }
+        sendPrompt(prompt)
+        openConversation()
+    }
+
+    private fun parseUiInspectorXml(xml: String): List<UiInspectorNode> {
+        if (xml.isBlank()) return emptyList()
+        val nodeRegex = Regex("""<node\s+([^>]+?)/?>""")
+        val attrRegex = Regex("""([a-zA-Z0-9_-]+)="([^"]*)"""")
+        val boundsRegex = Regex("""\[(\d+),(\d+)]\[(\d+),(\d+)]""")
+        val results = ArrayList<UiInspectorNode>()
+        for (match in nodeRegex.findAll(xml)) {
+            val attrs = HashMap<String, String>()
+            for (attr in attrRegex.findAll(match.groupValues[1])) {
+                attrs[attr.groupValues[1]] = attr.groupValues[2]
+            }
+            val rawId = attrs["resource-id"].orEmpty().substringAfterLast('/')
+            val rawClass = attrs["class"].orEmpty().substringAfterLast('.')
+            val rawText = attrs["text"].orEmpty().ifBlank { attrs["content-desc"].orEmpty() }.trim()
+            val rawBounds = attrs["bounds"].orEmpty()
+            if (rawId.isEmpty() && rawText.isEmpty()) continue
+            val bMatch = boundsRegex.find(rawBounds)
+            val l = bMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val t = bMatch?.groupValues?.get(2)?.toIntOrNull() ?: 0
+            val r = bMatch?.groupValues?.get(3)?.toIntOrNull() ?: 0
+            val b = bMatch?.groupValues?.get(4)?.toIntOrNull() ?: 0
+            if (r <= l || b <= t) continue
+            results.add(
+                UiInspectorNode(
+                    id = rawId,
+                    className = rawClass.ifBlank { "View" },
+                    text = rawText,
+                    bounds = rawBounds,
+                    left = l,
+                    top = t,
+                    right = r,
+                    bottom = b,
+                ),
+            )
+            if (results.size >= 80) break
+        }
+        return results
+    }
+
     fun revertSingleFile(path: String) {
         val project = _state.value.activeProject ?: return
         if (runs.keys.any { it.projectId == project.id }) return

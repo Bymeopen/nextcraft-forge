@@ -341,6 +341,7 @@ fun AgentScreen(
                                     onRevertAll = viewModel::revertAllChanges,
                                     onEditInTerminal = viewModel::editInTerminal,
                                     onAcceptAndCommit = viewModel::acceptAndCommitChanges,
+                                    onRevertHunk = viewModel::revertDiffHunk,
                                 )
                             }
                         }
@@ -522,6 +523,7 @@ fun AgentScreen(
         }
         // Voice: words appear in the box while speaking; "stop", "clear" and a trailing "send now" act as commands.
         var voiceBase by remember { mutableStateOf("") }
+        var handsFreeSend by rememberSaveable { mutableStateOf(false) }
         var imageDialogOpen by rememberSaveable { mutableStateOf(false) }
         fun joinVoice(base: String, spoken: String) = listOf(base.trim(), spoken.trim()).filter { it.isNotEmpty() }.joinToString(" ")
         val voice = rememberVoiceController(
@@ -532,9 +534,10 @@ fun AgentScreen(
                 when (val command = VoiceCommands.parse(spoken)) {
                     VoiceCommand.Stop -> { promptInput = voiceBase; viewModel.stopActiveTask(); false }
                     VoiceCommand.Clear -> { promptInput = ""; voiceBase = ""; true }
+                    is VoiceCommand.QuickSlash -> { promptInput = ""; voiceBase = ""; viewModel.sendPrompt(command.slash); false }
                     is VoiceCommand.Dictate -> {
                         val text = joinVoice(voiceBase, command.text)
-                        if (command.send && (text.isNotEmpty() || state.pendingAttachments.isNotEmpty())) {
+                        if ((command.send || handsFreeSend) && (text.isNotEmpty() || state.pendingAttachments.isNotEmpty())) {
                             promptInput = ""
                             voiceBase = ""
                             viewModel.sendPrompt(text)
@@ -574,6 +577,8 @@ fun AgentScreen(
             },
             listening = voice.listening,
             micLevel = voice.level,
+            handsFreeSend = handsFreeSend,
+            onToggleHandsFree = { handsFreeSend = !handsFreeSend },
             onGenerateImage = { imageDialogOpen = true },
             workspaceFiles = state.workspaceFiles,
             readyAgents = state.readyAgents,

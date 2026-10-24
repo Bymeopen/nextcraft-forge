@@ -297,6 +297,7 @@ fun FilesAndDiffScreen(
                     mode = "editor"
                 },
                 onRevertFile = viewModel::revertSingleFile,
+                onRevertHunk = viewModel::revertDiffHunk,
                 onRevertAll = viewModel::revertAllChanges,
                 onKeepFile = viewModel::keepSingleFile,
                 onKeepAll = viewModel::keepAllChanges,
@@ -886,6 +887,7 @@ private fun WorkspaceDiffReviewList(
     sessionRunning: Boolean,
     onOpenFile: (String) -> Unit,
     onRevertFile: (String) -> Unit,
+    onRevertHunk: (String, Int) -> Unit,
     onRevertAll: () -> Unit,
     onKeepFile: (String) -> Unit,
     onKeepAll: () -> Unit,
@@ -996,7 +998,12 @@ private fun WorkspaceDiffReviewList(
                             }
                         }
 
-                        DiffCodeView(lines = item.diffLines, path = item.path, previewLines = 200)
+                        DiffCodeView(
+                            lines = item.diffLines,
+                            path = item.path,
+                            previewLines = 200,
+                            onRevertHunk = if (!sessionRunning) ({ idx -> onRevertHunk(item.path, idx) }) else null,
+                        )
                     }
                 }
             }

@@ -28,6 +28,19 @@ internal object GradleDaemonReaper {
     internal fun shouldStop(level: Int, lowMemory: Boolean): Boolean =
         lowMemory || level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL || level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND
 
+    fun stopIdleNow(onComplete: (() -> Unit)? = null) {
+        Thread({
+            runCatching {
+                val proc = ProcessBuilder("su", "-c", STOP_IDLE_SCRIPT)
+                    .redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.to(java.io.File("/dev/null")))
+                    .start()
+                if (!proc.waitFor(20, TimeUnit.SECONDS)) proc.destroyForcibly()
+            }.onFailure { com.nextcraft.forge.runtime.ErrorLog.swallowed("GradleDaemonReaper", it) }
+            onComplete?.invoke()
+        }, "gradle-daemon-reaper-manual").apply { isDaemon = true }.start()
+    }
+
     fun onTrimMemory(context: Context, level: Int) {
         val info = ActivityManager.MemoryInfo()
         context.getSystemService(ActivityManager::class.java)?.getMemoryInfo(info)
