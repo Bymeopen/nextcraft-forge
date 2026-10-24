@@ -4873,6 +4873,8 @@ internal fun isTransientAgentFailure(reason: String): Boolean {
     val text = reason.lowercase()
     return listOf(
         "stream idle timeout", "context deadline exceeded", "sent nothing for 5 minutes", "stream was interrupted",
+        // agy's own wording for a dropped request, and our message for an unreachable Google.
+        "network issue connecting to the server", "could not reach google",
         "dropped mid-answer", "connection reset", "server returned an error", "overloaded", "code 500", "code 502",
         "code 503", "internal error encountered",
     ).any { it in text }

@@ -796,6 +796,7 @@ private fun classifyAntigravityError(value: String, allowTimeout: Boolean): Stri
 }
 
 private val ANTIGRAVITY_NETWORK_ERRORS = listOf(
+    "network issue connecting to the server",
     "dial tcp",
     "read tcp",
     "connection timed out",
