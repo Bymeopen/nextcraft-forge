@@ -16,7 +16,7 @@ internal object GradleDaemonReaper {
      * pgrep from matching this script's own command line (which contains the pattern text).
      */
     internal const val STOP_IDLE_SCRIPT =
-        "for p in \$(pgrep -f 'org[.]gradle[.]launcher[.]daemon[.]bootstrap[.]GradleDaemon' 2>/dev/null); do " +
+        "for p in \$(pgrep -f 'org[.]gradle[.]launcher[.]daemon[.]bootstrap[.]GradleDaemon|[/]root/[.]local/bin/agy.*--input-format stream-json' 2>/dev/null); do " +
             "a=\$(cut -d' ' -f14,15 /proc/\$p/stat 2>/dev/null); sleep 1; " +
             "b=\$(cut -d' ' -f14,15 /proc/\$p/stat 2>/dev/null); " +
             "[ -n \"\$a\" ] && [ \"\$a\" = \"\$b\" ] && kill \$p; done"

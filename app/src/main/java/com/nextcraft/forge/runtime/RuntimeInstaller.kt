@@ -2877,7 +2877,10 @@ echo "started pid ${'$'}! (log: ${'$'}log)"
                 totalMemoryMb >= 7_000 -> 2048L to 1024
                 else -> ((totalMemoryMb / 8).coerceIn(768L, 1024L) / 128) * 128 to 512
             }
-            return "-Xmx${heapMb}m -XX:MaxMetaspaceSize=${metaspaceMb}m -Dfile.encoding=UTF-8"
+            return "-Xmx${heapMb}m -XX:MaxMetaspaceSize=${metaspaceMb}m " +
+                "-XX:+UseG1GC -XX:G1PeriodicGCInterval=15000 -XX:+G1PeriodicGCInvokesConcurrent " +
+                "-XX:G1HeapWastePercent=5 -XX:MaxHeapFreeRatio=40 -XX:MinHeapFreeRatio=15 " +
+                "-Dfile.encoding=UTF-8"
         }
 
         /** Top-level rootfs directories that chroot-exec.sh bind-mounts from Android or the app on every launch. */

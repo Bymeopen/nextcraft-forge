@@ -298,7 +298,7 @@ class ClaudeRuntimeBridge(
                 }
                 InotifyLogTailer(nativeProcess.outputFile).use { tailer ->
                     while (process.isAlive || tailer.hasUnreadBytes()) {
-                        for (line in tailer.readLines(timeoutMs = 50L)) {
+                        for (line in tailer.readLines(timeoutMs = 250L)) {
                             processClaudeLine(line)
                         }
                         // A steering message that Claude folded into the turn that just ended brings no new turn.

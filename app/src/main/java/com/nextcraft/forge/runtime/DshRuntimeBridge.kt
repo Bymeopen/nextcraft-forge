@@ -361,7 +361,7 @@ class DshRuntimeBridge(
                     Log.w("DshBridge", "SDK acknowledged completion but did not exit; stopping its runtime wrapper")
                     process.destroyForcibly()
                 }
-                for (line in tailer.readLines(timeoutMs = 50L)) {
+                for (line in tailer.readLines(timeoutMs = 250L)) {
                     processDshLine(line)
                 }
             }
