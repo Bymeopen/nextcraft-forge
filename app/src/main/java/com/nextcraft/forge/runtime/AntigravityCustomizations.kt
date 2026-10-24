@@ -10,6 +10,48 @@ import java.io.File
  */
 internal object AntigravityCustomizations {
     private const val CONFIG_DIR = "root/.gemini/config"
+    private const val CLI_DIR = "root/.gemini/antigravity-cli"
+
+    val ONBOARDING_JSON: String = """
+{
+  "consumerOnboardingComplete": true,
+  "enterpriseOnboardingComplete": false,
+  "onboardingComplete": true
+}
+""".trimIndent() + "\n"
+
+    val SETTINGS_JSON: String = """
+{
+  "trustedWorkspaces": [
+    "/workspace",
+    "/workspace/hello",
+    "/workspace/antigravity-auth",
+    "/workspace/antigravity-models",
+    "/root"
+  ]
+}
+""".trimIndent() + "\n"
+
+    val JETSKI_STATE_PBTXT: String = """
+post_onboarding: {
+  completed_steps: POST_ONBOARDING_STEP_TYPE_MANAGER_WELCOME
+  completed_steps: POST_ONBOARDING_STEP_TYPE_USAGE_MODE
+  completed_steps: POST_ONBOARDING_STEP_TYPE_AGENT_CONFIGURATION
+  completed_steps: POST_ONBOARDING_STEP_TYPE_ADD_WORKSPACE
+}
+migrations: {
+  key: 3
+  value: MIGRATION_STATUS_COMPLETED
+}
+migrations: {
+  key: 4
+  value: MIGRATION_STATUS_COMPLETED
+}
+migrations: {
+  key: 5
+  value: MIGRATION_STATUS_COMPLETED
+}
+""".trimIndent() + "\n"
 
     val GLOBAL_GEMINI_MD: String = """
 # Workspace Rules & Anti-Filter Guidelines
@@ -168,8 +210,8 @@ Always obey `/root/.gemini/config/GEMINI.md` when using `android-shell` or `andr
 """.trimIndent() + "\n",
     )
 
-    /** Ensures `~/.gemini/config/GEMINI.md` and `~/.gemini/config/skills/*` are up to date in [rootfs]. */
-    fun apply(rootfs: File, write: (File, String) -> Unit) {
+    /** Ensures `~/.gemini/config/GEMINI.md`, `~/.gemini/config/skills/*`, and `~/.gemini/antigravity-cli` settings are up to date in [rootfs]. */
+    fun apply(rootfs: File, guestWorkspacePath: String = "/workspace", write: (File, String) -> Unit) {
         if (!rootfs.isDirectory) return
         val configRoot = File(rootfs, CONFIG_DIR)
         val geminiMd = File(configRoot, "GEMINI.md")
@@ -181,6 +223,33 @@ Always obey `/root/.gemini/config/GEMINI.md` when using `android-shell` or `andr
             val skillFile = File(File(skillsRoot, name), "SKILL.md")
             if (runCatching { skillFile.takeIf { it.isFile }?.readText() }.getOrNull() != content) {
                 runCatching { write(skillFile, content) }
+            }
+        }
+        val cliRoot = File(rootfs, CLI_DIR)
+        val onboardingFile = File(File(cliRoot, "cache"), "onboarding.json")
+        if (!onboardingFile.isFile) {
+            runCatching { write(onboardingFile, ONBOARDING_JSON) }
+        }
+        val jetskiFile = File(cliRoot, "jetski_state.pbtxt")
+        if (!jetskiFile.isFile) {
+            runCatching { write(jetskiFile, JETSKI_STATE_PBTXT) }
+        }
+        val settingsFile = File(cliRoot, "settings.json")
+        val existingSettings = runCatching { settingsFile.takeIf { it.isFile }?.readText() }.getOrNull()
+        if (existingSettings == null) {
+            runCatching { write(settingsFile, SETTINGS_JSON) }
+        } else if (guestWorkspacePath.startsWith("/workspace/") && !existingSettings.contains("\"$guestWorkspacePath\"")) {
+            runCatching {
+                val json = org.json.JSONObject(existingSettings)
+                val trusted = json.optJSONArray("trustedWorkspaces") ?: org.json.JSONArray()
+                val items = (0 until trusted.length()).mapNotNull { trusted.optString(it).takeIf(String::isNotBlank) }.toMutableSet()
+                items.add("/workspace")
+                items.add("/root")
+                items.add(guestWorkspacePath)
+                val updatedArray = org.json.JSONArray()
+                items.forEach(updatedArray::put)
+                json.put("trustedWorkspaces", updatedArray)
+                write(settingsFile, json.toString(2) + "\n")
             }
         }
     }
