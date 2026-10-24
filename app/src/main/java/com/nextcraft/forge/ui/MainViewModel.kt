@@ -168,6 +168,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         unnamedUserLabel = { str(R.string.msg_gh_user) },
         errorText = ::errText,
     )
+
+    /** Finding and installing a newer build of the app; mirrored into [_state] like [githubAuth]. */
+    val appUpdate = com.nextcraft.forge.update.AppUpdateController(
+        scope = viewModelScope,
+        source = object : com.nextcraft.forge.update.AppUpdateSource {
+            override fun check(manifestUrlOverride: String) = AppUpdater(application, manifestUrlOverride).check()
+            override fun download(info: com.nextcraft.forge.update.AppUpdateInfo, progress: (Long, Long) -> Unit) =
+                AppUpdater(application).download(info, progress)
+            override fun install(apk: File) {
+                AndroidAppInstaller.install(context = application, apk = apk, launchAfterInstall = false)
+            }
+        },
+        prefs = object : com.nextcraft.forge.update.UpdatePrefs {
+            override var notifications: Boolean
+                get() = preferences.updateNotifications
+                set(value) { preferences.updateNotifications = value }
+            override var autoInstall: Boolean
+                get() = preferences.autoInstallUpdates
+                set(value) { preferences.autoInstallUpdates = value }
+        },
+        scheduleBackgroundCheck = { com.nextcraft.forge.update.UpdateCheckWorker.schedule(application) },
+        cancelBackgroundCheck = { com.nextcraft.forge.update.UpdateCheckWorker.cancel(application) },
+        announce = { com.nextcraft.forge.update.UpdateNotifier.notifyIfNew(application, it) },
+        text = { id, args -> str(id, *args) },
+        localize = ::localizeMsg,
+    )
     val antigravityAuth = AntigravityAuthController(
         context = application,
         initiallySignedIn = preferences.antigravitySignedIn,
@@ -340,6 +366,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        viewModelScope.launch {
+            appUpdate.state.collect { u ->
+                _state.update {
+                    it.copy(
+                        updateNotifications = u.notifications,
+                        autoInstallUpdates = u.autoInstall,
+                        updateInfo = u.info,
+                        updateStatusMessage = u.statusMessage,
+                        updateProgress = u.progress,
+                        checkingAppUpdate = u.checking,
+                    )
+                }
+            }
+        }
         // The screens still read these four fields from ForgeUiState; the controller is the only writer.
         viewModelScope.launch {
             githubAuth.state.collect { g ->
@@ -429,8 +469,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     autoKeepChanges = preferences.autoKeepChanges,
                     reaChatHint = preferences.reaChatHint,
                     scheduleEnabled = preferences.scheduleEnabled,
-                    updateNotifications = preferences.updateNotifications,
-                    autoInstallUpdates = preferences.autoInstallUpdates,
                     autoBranchChats = preferences.autoBranchChats,
                     antigravityModel = preferences.antigravityModel,
                     antigravityEffort = preferences.antigravityEffort,
@@ -4545,50 +4583,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(gameTemplatesEnabled = enabled) }
     }
 
-    fun setUpdateNotifications(enabled: Boolean) {
-        preferences.updateNotifications = enabled
-        _state.update { it.copy(updateNotifications = enabled) }
-        val app = getApplication<Application>()
-        if (enabled) {
-            com.nextcraft.forge.update.UpdateCheckWorker.schedule(app)
-            silentUpdateCheck(force = true)
-        } else if (!preferences.autoInstallUpdates) {
-            com.nextcraft.forge.update.UpdateCheckWorker.cancel(app)
-        }
-    }
+    fun setUpdateNotifications(enabled: Boolean) = appUpdate.setNotifications(enabled)
 
     /** Background download and silent install while the app is idle (needs root; without it only the notification shows). */
-    fun setAutoInstallUpdates(enabled: Boolean) {
-        preferences.autoInstallUpdates = enabled
-        _state.update { it.copy(autoInstallUpdates = enabled) }
-        val app = getApplication<Application>()
-        if (enabled) {
-            com.nextcraft.forge.update.UpdateCheckWorker.schedule(app)
-        } else if (!preferences.updateNotifications) {
-            com.nextcraft.forge.update.UpdateCheckWorker.cancel(app)
-        }
-    }
+    fun setAutoInstallUpdates(enabled: Boolean) = appUpdate.setAutoInstall(enabled)
 
-    /**
-     * Looks for a newer build without the "checking" UI: when the app opens, and when notifications are switched on.
-     * A newer build is kept in [ForgeUiState.updateInfo] (the Projects banner and the update row read it) and announced
-     * once with a notification. Errors are ignored here; the manual check still reports them.
-     */
-    fun silentUpdateCheck(force: Boolean = false) {
-        if (!force && !preferences.updateNotifications) return
-        val now = System.currentTimeMillis()
-        if (!force && now - lastSilentUpdateCheck < 60 * 60 * 1000L) return
-        lastSilentUpdateCheck = now
-        viewModelScope.launch {
-            val info = withContext(Dispatchers.IO) { runCatching { AppUpdater(getApplication()).check() }.getOrNull() } ?: return@launch
-            if (_state.value.updateInfo == null) {
-                _state.update { it.copy(updateInfo = info, updateStatusMessage = str(R.string.upd_available, info.versionName, info.versionCode)) }
-            }
-            withContext(Dispatchers.IO) { com.nextcraft.forge.update.UpdateNotifier.notifyIfNew(getApplication(), info) }
-        }
-    }
-
-    private var lastSilentUpdateCheck = 0L
+    /** See [com.nextcraft.forge.update.AppUpdateController.silentCheck]. */
+    fun silentUpdateCheck(force: Boolean = false) = appUpdate.silentCheck(force)
 
     fun setReaChatHint(enabled: Boolean) {
         preferences.reaChatHint = enabled
@@ -4700,70 +4701,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun checkForAppUpdates(manifestUrlOverride: String = "") {
-        if (_state.value.checkingAppUpdate) return
-        viewModelScope.launch {
-            _state.update { it.copy(checkingAppUpdate = true, updateInfo = null, updateStatusMessage = str(R.string.upd_checking)) }
-            val result = withContext(Dispatchers.IO) {
-                runCatching { AppUpdater(getApplication(), manifestUrlOverride.trim()).check() }.onFailure { com.nextcraft.forge.runtime.ErrorLog.swallowed("MainViewModel", it) }
-            }
-            val info = result.getOrNull()
-            val error = result.exceptionOrNull()
-            _state.update {
-                it.copy(
-                    checkingAppUpdate = false,
-                    updateInfo = info,
-                    updateStatusMessage = when {
-                        error is NoPublishedReleaseException ->
-                            str(R.string.upd_no_release)
-                        error is java.net.UnknownHostException || error is java.net.SocketTimeoutException ->
-                            str(R.string.upd_no_internet)
-                        error != null -> str(R.string.upd_check_failed, error.message?.let(::localizeMsg) ?: str(R.string.upd_network_error))
-                        info != null -> str(R.string.upd_available, info.versionName, info.versionCode)
-                        else -> str(R.string.upd_up_to_date)
-                    },
-                )
-            }
-        }
-    }
+    fun checkForAppUpdates(manifestUrlOverride: String = "") = appUpdate.checkNow(manifestUrlOverride)
 
-    fun downloadAndInstallAppUpdate() {
-        val info = _state.value.updateInfo ?: return
-        if (_state.value.updateProgress != null) return
-        viewModelScope.launch {
-            _state.update { it.copy(updateProgress = 0f, updateStatusMessage = str(R.string.upd_downloading, info.versionName)) }
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    var lastReported = -1
-                    val apk = AppUpdater(getApplication()).download(info) { downloaded, total ->
-                        val fraction = if (total > 0) (downloaded.toFloat() / total).coerceIn(0f, 1f) else null
-                        // Report whole-percent steps only; per-chunk state updates would recompose the screen constantly.
-                        val step = fraction?.let { (it * 100).toInt() } ?: (downloaded / (512 * 1024)).toInt()
-                        if (step != lastReported) {
-                            lastReported = step
-                            val mb = "%.1f".format(downloaded / 1_048_576.0)
-                            val msg = if (fraction != null) {
-                                str(R.string.upd_progress_total, info.versionName, mb, "%.1f".format(total / 1_048_576.0))
-                            } else {
-                                str(R.string.upd_progress, info.versionName, mb)
-                            }
-                            _state.update { it.copy(updateProgress = fraction ?: 0f, updateStatusMessage = msg) }
-                        }
-                    }
-                    AndroidAppInstaller.install(
-                        context = getApplication(),
-                        apk = apk,
-                        launchAfterInstall = false,
-                    )
-                }.onFailure { com.nextcraft.forge.runtime.ErrorLog.swallowed("MainViewModel", it) }
-            }
-            result.onSuccess {
-                _state.update { it.copy(updateProgress = null, updateStatusMessage = str(R.string.upd_installing, info.versionName)) }
-            }.onFailure { err ->
-                _state.update { it.copy(updateProgress = null, updateStatusMessage = str(R.string.upd_install_failed, err.message?.let(::localizeMsg).orEmpty())) }
-            }
-        }
-    }
+    fun downloadAndInstallAppUpdate() = appUpdate.downloadAndInstall()
 
     fun setThemeMode(mode: String) {
         val resolved = ForgeThemeMode.fromStored(mode).id
