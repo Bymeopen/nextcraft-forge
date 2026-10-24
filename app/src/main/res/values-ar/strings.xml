@@ -1548,4 +1548,6 @@
     <string name="restore_restart">إعادة التشغيل الآن</string>
     <string name="backup_busy">أوقف الوكيل أو أمر الطرفية الجاري أولًا.</string>
     <string name="agent_auto_retry_notice">إعادة المحاولة تلقائيًا مرة واحدة…</string>
+    <string name="hud_live_title">محرك النشاط المباشر</string>
+    <string name="hud_live_empty">انتهت جميع الوكلاء وعمليات البناء في الخلفية.</string>
 </resources>

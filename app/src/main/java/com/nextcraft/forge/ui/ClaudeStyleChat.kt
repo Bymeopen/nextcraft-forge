@@ -106,8 +106,13 @@ internal fun ChatTopBar(
                     CircularProgressIndicator(modifier = Modifier.padding(start = 8.dp).size(14.dp), strokeWidth = 2.dp)
                 }
             }
+            val activeAgentLabel = primaryAgent(state).displayTitle()
+            val modeSuffix = if (state.routing.mode != com.nextcraft.forge.model.RouteMode.SINGLE) {
+                routeModeLabel(state.routing.mode)
+            } else null
+            val branchSuffix = if (activeChat?.isolated == true) stringResource(R.string.branch_title) else null
             Text(
-                text = listOfNotNull(state.activeProject?.name, state.agentKind.displayTitle()).joinToString(" · "),
+                text = listOfNotNull(state.activeProject?.name, activeAgentLabel, modeSuffix, branchSuffix).joinToString(" · "),
                 fontSize = ForgeType.secondary,
                 color = scheme.onSurfaceVariant,
                 maxLines = 1,
@@ -280,7 +285,12 @@ internal fun ChatUsageSheet(state: ForgeUiState, onDismiss: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     val tokens = LocalForgeThemeTokens.current
     val used = estimateContextTokens(state.messages)
-    val limit = contextWindowTokens(state.providerProfile.model)
+    val activeAgent = primaryAgent(state)
+    val activeModel = when (activeAgent) {
+        AgentKind.ANTIGRAVITY -> state.antigravityModel
+        else -> profileOf(state, activeAgent).model
+    }
+    val limit = contextWindowTokens(activeModel)
     val fraction = (used.toFloat() / limit).coerceIn(0f, 1f)
     ForgeModalSheet(
         onDismissRequest = onDismiss,
@@ -417,8 +427,12 @@ private fun ModelList(options: List<ModelOption>, selectedId: String, onSelect: 
 internal fun estimateContextTokens(messages: List<ChatMessage>): Int =
     messages.sumOf { message -> message.text.length + message.workItems.sumOf { it.title.length + it.detail.length } } / 4
 
-/** The window assumed for a model id: the `[1m]` variants have one million tokens, everything else 200k. */
-internal fun contextWindowTokens(model: String): Int = if (model.contains("[1m]", ignoreCase = true)) 1_000_000 else 200_000
+/** The window assumed for a model id: the `[1m]` and Gemini Pro/Argon variants have one million tokens, everything else 200k. */
+internal fun contextWindowTokens(model: String): Int =
+    if (model.contains("[1m]", ignoreCase = true) ||
+        model.contains("gemini", ignoreCase = true) ||
+        model.contains("argon", ignoreCase = true)
+    ) 1_000_000 else 200_000
 
 /** "442.8k", "1M", "200k": compact token counts for the usage sheet. */
 internal fun formatTokenCount(tokens: Int): String = when {

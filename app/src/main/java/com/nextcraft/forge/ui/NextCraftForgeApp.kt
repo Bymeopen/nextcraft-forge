@@ -223,7 +223,7 @@ fun NextCraftForgeApp(viewModel: MainViewModel) {
                             ProjectPane.PREVIEW -> ForgeTab.PREVIEW
                         },
                         changedCount = state.changedItems.size,
-                        agentRunning = state.sessionRunning,
+                        agentRunning = state.runningChatIds.isNotEmpty(),
                         terminalBusy = state.terminalRunning,
                         onSelectTab = { tab ->
                             viewModel.selectProjectPane(
@@ -332,6 +332,13 @@ fun NextCraftForgeApp(viewModel: MainViewModel) {
                     }
                 }
             }
+
+            LiveActivityHud(
+                state = state,
+                onSelectRun = viewModel::openProjectChat,
+                onSelectBuild = viewModel::openProjectBuild,
+                onStopRun = viewModel::stopProjectChatRun,
+            )
 
             // Screen host: inside Projects, going deeper (list → chats → conversation) pushes from the right and
             // Back pops; tab and pane changes cross-fade. One key per visible screen.
@@ -446,4 +453,25 @@ fun NextCraftForgeApp(viewModel: MainViewModel) {
 }
 
 /** Banners that only confirm something; everything else (errors, blocked actions, offers) stays on screen. */
-private val transientBanners = setOf(R.string.msg_agents_up_to_date, R.string.msg_imported, R.string.msg_queue_discarded)
+private val transientBanners = setOf(
+    R.string.msg_agents_up_to_date,
+    R.string.msg_imported,
+    R.string.msg_queue_discarded,
+    R.string.msg_caches_cleared,
+    R.string.msg_parallel_queued,
+    R.string.branch_enabled,
+    R.string.branch_auto,
+    R.string.branch_merged,
+    R.string.branch_updated,
+    R.string.branch_committed,
+    R.string.repo_committed,
+    R.string.repo_branch_created,
+    R.string.repo_branch_switched,
+    R.string.repo_branch_deleted,
+    R.string.connector_saved,
+    R.string.skill_saved,
+    R.string.schedule_added,
+    R.string.schedule_cleared,
+    R.string.rt_snap_saved,
+    R.string.rt_snap_deleted,
+)

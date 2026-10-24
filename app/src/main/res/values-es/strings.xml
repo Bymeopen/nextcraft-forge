@@ -1488,4 +1488,6 @@
     <string name="restore_restart">Reiniciar ahora</string>
     <string name="backup_busy">Detén primero el agente o el comando del terminal en curso.</string>
     <string name="agent_auto_retry_notice">Reintentando automáticamente una vez…</string>
+    <string name="hud_live_title">Motor de actividad en vivo</string>
+    <string name="hud_live_empty">Todos los agentes y compilaciones en segundo plano han terminado.</string>
 </resources>

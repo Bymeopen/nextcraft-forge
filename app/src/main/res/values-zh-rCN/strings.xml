@@ -1448,4 +1448,6 @@
     <string name="restore_restart">立即重启</string>
     <string name="backup_busy">请先停止正在运行的代理或终端命令。</string>
     <string name="agent_auto_retry_notice">正在自动重试一次…</string>
+    <string name="hud_live_title">实时活动引擎</string>
+    <string name="hud_live_empty">所有后台代理和构建已完成。</string>
 </resources>

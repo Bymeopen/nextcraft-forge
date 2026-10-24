@@ -1751,7 +1751,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (cleanPrompt.isEmpty() && attachments.isEmpty()) return
         val project = _state.value.activeProject ?: return
         val chatId = _state.value.activeChatId
-        if (attachments.isEmpty() && handleLoopCommand(cleanPrompt)) return
+        if (attachments.isEmpty() && (handleLoopCommand(cleanPrompt) || handleQuickSlashCommand(cleanPrompt))) return
         _state.update { it.copy(pendingAttachments = emptyList()) }
         val prompt = QueuedPrompt(text = cleanPrompt, attachments = attachments, projectId = project.id, chatId = chatId)
         when {
@@ -1835,6 +1835,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (after == before) return
         saveScheduled(after)
         _state.update { it.copy(bannerMessage = UiText.res(R.string.schedule_agent_changed)) }
+    }
+
+    /** Handles quick slash commands (/build, /branch, /diff, /terminal, /clear) typed in the chat composer. */
+    private fun handleQuickSlashCommand(text: String): Boolean {
+        val cmd = text.trim().lowercase()
+        val chatId = _state.value.activeChatId
+        return when (cmd) {
+            "/build" -> {
+                _state.update { it.copy(activeTab = ForgeTab.ANDROID) }
+                runAndroidBuild("assembleDebug", installAfterBuild = true)
+                true
+            }
+            "/branch" -> {
+                enableChatBranch(chatId)
+                true
+            }
+            "/diff", "/files" -> {
+                selectProjectPane(ProjectPane.FILES)
+                true
+            }
+            "/terminal" -> {
+                selectProjectPane(ProjectPane.TERMINAL)
+                true
+            }
+            "/clear" -> {
+                clearActiveChat()
+                true
+            }
+            else -> false
+        }
     }
 
     /** `/loop 30m prompt` creates a task in this chat, `/loop off` removes this chat's tasks. True when the text was a command. */
@@ -2167,6 +2197,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val run = ChatRun(
             chatId = chatId,
             projectId = project.id,
+            projectName = project.name,
+            chatTitle = updatedChats.firstOrNull { it.id == chatId }?.title ?: "Main chat",
             bridge = bridge,
             ownsBridge = true,
             lastPrompt = QueuedPrompt(text = cleanPrompt, attachments = attachments, projectId = project.id, chatId = chatId),
@@ -2244,6 +2276,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (run.projectId == _state.value.activeProjectId && run.chatId == _state.value.activeChatId) {
             _state.update { it.copy(activeStatusLine = line) }
         }
+        publishRunningFlags()
     }
 
     private fun setRunPendingTool(run: ChatRun, request: ToolRequest?) {
@@ -2251,6 +2284,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (run.projectId == _state.value.activeProjectId && run.chatId == _state.value.activeChatId) {
             _state.update { it.copy(pendingToolRequest = request) }
         }
+        publishRunningFlags()
     }
 
     /** Applies [change] to the chat's messages: kept in the run, and shown when that chat is the visible one. */
@@ -2305,10 +2339,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val activeProjectId = _state.value.activeProjectId
         val activeProjectChatIds = runs.keys.filter { it.projectId == activeProjectId }.map { it.chatId }.toSet()
         val countsByProject = runs.keys.groupingBy { it.projectId }.eachCount()
+        val liveList = runs.values.map { r ->
+            LiveAgentRunInfo(
+                projectId = r.projectId,
+                projectName = _state.value.projects.firstOrNull { it.id == r.projectId }?.name ?: r.projectName,
+                chatId = r.chatId,
+                chatTitle = if (r.projectId == activeProjectId) {
+                    _state.value.chats.firstOrNull { it.id == r.chatId }?.title ?: r.chatTitle
+                } else r.chatTitle,
+                agent = r.agent,
+                statusLine = r.statusLine,
+                waitingApproval = r.pendingTool != null,
+            )
+        }
         _state.update {
             it.copy(
                 runningChatIds = activeProjectChatIds,
                 runningProjectChatCounts = countsByProject,
+                liveAgentRuns = liveList,
                 sessionRunning = runs.isNotEmpty(),
             )
         }
@@ -2398,6 +2446,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Stops the agent turn of the chat on screen only; other chats keep working and a running build keeps going. */
     fun stopActiveTask() {
         val run = runs[runKey(_state.value.activeProjectId, _state.value.activeChatId)] ?: return
+        stopRun(run, discardQueue = true)
+    }
+
+    /** Stops the agent turn of any specific project and chat (used by the Dynamic Multi-Agent Live Activity HUD). */
+    fun stopProjectChatRun(projectId: String, chatId: String) {
+        val run = runs[runKey(projectId, chatId)] ?: return
         stopRun(run, discardQueue = true)
     }
 
@@ -2837,6 +2891,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun cancelLeavingFile() {
         afterUnsavedChoice = null
         _state.update { it.copy(unsavedChangesPrompt = null) }
+    }
+
+    /** Opens one chat of any project directly (used by the Dynamic Multi-Agent Live Activity HUD). */
+    fun openProjectChat(projectId: String, chatId: String) = leaveOpenFile {
+        if (_state.value.activeProjectId != projectId) {
+            selectProject(projectId)
+        }
+        selectChat(chatId)
+        _state.update { it.copy(activeTab = ForgeTab.PROJECTS, projectView = ProjectView.CONVERSATION, projectPane = ProjectPane.CHAT) }
+    }
+
+    /** Opens a project's Android Build screen directly (used by the Dynamic Multi-Agent Live Activity HUD). */
+    fun openProjectBuild(projectId: String) = leaveOpenFile {
+        if (_state.value.activeProjectId != projectId) {
+            selectProject(projectId)
+        }
+        _state.update { it.copy(activeTab = ForgeTab.ANDROID) }
     }
 
     /** Opens a project from the project list, asking about unsaved edits first; shows the agent only if it switched. */
@@ -4912,6 +4983,8 @@ private const val MIN_FREE_BYTES_FOR_LIGHT_RUN = 450L * 1024 * 1024
 private class ChatRun(
     val chatId: String,
     val projectId: String,
+    val projectName: String = "",
+    val chatTitle: String = "Main chat",
     val bridge: RuntimeBridge,
     /** True when [bridge] was created for this run (Claude Code); its events are collected by the run itself. */
     val ownsBridge: Boolean,

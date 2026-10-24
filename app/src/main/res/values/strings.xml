@@ -1474,4 +1474,6 @@
     <string name="restore_restart">Restart now</string>
     <string name="backup_busy">Stop the running agent or terminal command first.</string>
     <string name="agent_auto_retry_notice">Retrying automatically once…</string>
+    <string name="hud_live_title">Live Activity Engine</string>
+    <string name="hud_live_empty">All background agents and builds have finished.</string>
 </resources>
