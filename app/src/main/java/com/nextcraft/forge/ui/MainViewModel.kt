@@ -1981,9 +1981,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Handles quick slash commands (/build, /branch, /diff, /terminal, /clear, /memory, /review) typed in the chat composer. */
+    /** Compacts older messages of the active chat into a single summary turn, keeping the last 4 messages intact and resetting the CLI session ID so the next turn uses a lean context window. */
+    fun compactActiveChat() {
+        val project = _state.value.activeProject ?: return
+        val chatId = _state.value.activeChatId
+        if (runs.containsKey(runKey(project.id, chatId))) return
+        val current = currentMessagesOf(project.id, chatId).filterNot { it.id == "streaming-assistant" }
+        if (current.size <= 4) {
+            _state.update { it.copy(bannerMessage = UiText.Raw("Context is already compact (${current.size} messages)")) }
+            return
+        }
+        val older = current.dropLast(4)
+        val recent = current.takeLast(4)
+        val summaryBullets = older.takeLast(12).joinToString("\n") { msg ->
+            val role = if (msg.fromUser) "User" else "Agent"
+            val snippet = msg.text.replace(Regex("\\s+"), " ").trim().take(160)
+            "- **$role**: $snippet"
+        }
+        val summaryMsg = ChatMessage(
+            fromUser = false,
+            text = "📦 **Compacted Context Summary (${older.size} earlier messages)**:\n$summaryBullets",
+        )
+        val compacted = listOf(summaryMsg) + recent
+        AgentKind.entries.forEach { agent ->
+            preferences.saveAgentConversation(agent, project.id, chatId, null)
+        }
+        preferences.saveMessages(project.id, chatId, compacted)
+        _state.update {
+            it.copy(
+                messages = compacted,
+                bannerMessage = UiText.Raw("Compacted ${older.size} messages into summary"),
+            )
+        }
+    }
+
+    /** Handles quick slash commands (/build, /branch, /diff, /terminal, /clear, /memory, /review, /compact) typed in the chat composer, including IME-duplicated `/cmd/cmd` forms. */
     private fun handleQuickSlashCommand(text: String): Boolean {
-        val cmd = text.trim().lowercase()
+        val raw = text.trim().lowercase()
+        // Deduplicate accidental IME composing repetition such as `/compact/compact` -> `/compact`.
+        val cmd = Regex("""^(/[a-z0-9_-]+)\1+$""").matchEntire(raw)?.groupValues?.get(1) ?: raw
         val chatId = _state.value.activeChatId
         return when (cmd) {
             "/build" -> {
@@ -2009,6 +2045,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             "/review" -> {
                 reviewChangesWithSecondAgent()
+                true
+            }
+            "/compact" -> {
+                compactActiveChat()
                 true
             }
             "/clear" -> {

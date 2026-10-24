@@ -560,7 +560,12 @@ internal fun ChatComposer(
             modifier = Modifier.fillMaxWidth().semantics { contentDescription = composerLabel },
             maxLines = 5,
             // Enter stays a newline (messages are multi-line); send is the round button.
-            keyboardOptions = ForgeFieldKind.TEXT.keyboardOptions(ImeAction.Default),
+            // Disable IME autocorrect when typing a slash command (`/`) so Gboard/IME never duplicates `/compact/compact`.
+            keyboardOptions = if (promptInput.startsWith("/")) {
+                ForgeFieldKind.IDENTIFIER.keyboardOptions(ImeAction.Default)
+            } else {
+                ForgeFieldKind.TEXT.keyboardOptions(ImeAction.Default)
+            },
             colors = TextFieldDefaults.colors(
                 focusedContainerColor = Color.Transparent,
                 unfocusedContainerColor = Color.Transparent,
@@ -760,6 +765,7 @@ private fun ComposerAutocompletePopover(
                     ComposerSuggestion("cmd-build", "/build", "Build & install debug APK", ForgeGlyph.BUILD, "Action", "/build", executeImmediately = true),
                     ComposerSuggestion("cmd-review", "/review", "Audit uncommitted changes with 2nd agent", ForgeGlyph.SPARK, "Swarm", "/review", executeImmediately = true),
                     ComposerSuggestion("cmd-memory", "/memory", "Open persistent project memory (.forge/memory.md)", ForgeGlyph.FILE, "Memory", "/memory", executeImmediately = true),
+                    ComposerSuggestion("cmd-compact", "/compact", "Compact conversation history into a concise summary", ForgeGlyph.SPARK, "Context", "/compact", executeImmediately = true),
                     ComposerSuggestion("cmd-diff", "/diff", "Open workspace diff & changed files", ForgeGlyph.CODE, "Pane", "/diff", executeImmediately = true),
                     ComposerSuggestion("cmd-branch", "/branch", "Isolate this chat in its own Git branch", ForgeGlyph.SPARK, "Git", "/branch", executeImmediately = true),
                     ComposerSuggestion("cmd-loop", "/loop 30m ", "Repeat a prompt on a schedule (5m–7d)", ForgeGlyph.SPARK, "Timer", "/loop 30m "),
