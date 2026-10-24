@@ -961,8 +961,9 @@ internal fun LiveActivityHud(
                         color = if (anyWaitingApproval) tokens.warningText else scheme.primary,
                     )
                     if (leadRun != null) {
+                        val leadLabel = listOf(leadRun.projectName, leadRun.chatTitle).joinToString(" · ")
                         Text(
-                            text = "· ${leadRun.projectName} (${leadRun.chatTitle})",
+                            text = leadLabel,
                             fontSize = ForgeType.caption,
                             color = scheme.onSurfaceVariant,
                             maxLines = 1,
@@ -988,13 +989,13 @@ internal fun LiveActivityHud(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    text = "Live Activity Engine",
+                    text = stringResource(R.string.hud_live_title),
                     fontSize = ForgeType.screenTitle,
                     fontWeight = FontWeight.SemiBold,
                 )
                 if (state.liveAgentRuns.isEmpty() && activeBuilds.isEmpty()) {
                     Text(
-                        text = "All background agents and builds have finished.",
+                        text = stringResource(R.string.hud_live_empty),
                         fontSize = ForgeType.body,
                         color = scheme.onSurfaceVariant,
                     )
@@ -1028,8 +1029,9 @@ internal fun LiveActivityHud(
                             )
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
+                                val runTitle = listOf(run.projectName, run.chatTitle).joinToString(" · ")
                                 Text(
-                                    text = "${run.projectName} · ${run.chatTitle}",
+                                    text = runTitle,
                                     fontSize = ForgeType.rowTitle,
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,
@@ -1076,8 +1078,9 @@ internal fun LiveActivityHud(
                             ForgeIcon(glyph = ForgeGlyph.BUILD, tint = tokens.warningText, size = 20.dp)
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
+                                val buildTitle = listOfNotNull(proj?.name, stringResource(R.string.notif_building_apk)).joinToString(" · ")
                                 Text(
-                                    text = "${proj?.name ?: "Project"} · Building APK",
+                                    text = buildTitle,
                                     fontSize = ForgeType.rowTitle,
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,
