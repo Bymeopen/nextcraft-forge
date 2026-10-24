@@ -539,6 +539,12 @@ internal fun ChatComposer(
             ),
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
+        // Attach and the chips scroll on their own: long model/route labels must never push the mic and send
+        // buttons past the edge of a narrow phone, which left them off-screen and unreachable.
+        Row(
+            modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             // Attach: photos or any file; it lands in attachments/ inside the workspace.
             Box {
                 IconButton(onClick = { attachMenuOpen = true }) {
@@ -599,7 +605,7 @@ internal fun ChatComposer(
                     )
                 }
             }
-            Spacer(modifier = Modifier.weight(1f))
+        }
             if (onMic != null) {
                 val reduceMotionMic = rememberReduceMotion()
                 val pulseColor = MaterialTheme.colorScheme.error
