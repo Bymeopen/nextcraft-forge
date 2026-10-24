@@ -159,15 +159,15 @@ fun AgentScreen(
     // Every time the chat is opened (or another chat is picked) start at the newest message. rememberLazyListState
     // is saveable, so on return it restores the old position (often the top) and ignores its initial index;
     // this plain remember is reset on each entry and forces the jump once the messages are there.
-    var openedAtEnd by remember(state.activeChatId) { mutableStateOf(false) }
-    LaunchedEffect(state.activeChatId, state.messages.isNotEmpty()) {
+    var openedAtEnd by remember(state.activeProjectId, state.activeChatId) { mutableStateOf(false) }
+    LaunchedEffect(state.activeProjectId, state.activeChatId, state.messages.isNotEmpty()) {
         if (!openedAtEnd && state.messages.isNotEmpty()) {
             listState.scrollToItem(state.messages.lastIndex, Int.MAX_VALUE)
             openedAtEnd = true
         }
     }
 
-    var previousMessageCount by remember { mutableStateOf(state.messages.size) }
+    var previousMessageCount by remember(state.activeProjectId, state.activeChatId) { mutableStateOf(state.messages.size) }
     LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.text?.length) {
         if (state.messages.isNotEmpty()) {
             val lastIdx = state.messages.lastIndex
@@ -326,10 +326,10 @@ fun AgentScreen(
                                 BranchSummaryCard(status = branchStatus, onOpen = { branchSheetOpen = true })
                             }
                             // Review right where the agent said it was done; the Files tab keeps the full diff view.
-                            if (message.id == lastAssistantId && pendingChanges.isNotEmpty() && !state.sessionRunning) {
+                            if (message.id == lastAssistantId && pendingChanges.isNotEmpty() && state.runningChatIds.isEmpty()) {
                                 ChangedFilesCard(
                                     changes = pendingChanges,
-                                    enabled = !state.sessionRunning,
+                                    enabled = state.runningChatIds.isEmpty(),
                                     onOpenFile = { path ->
                                         viewModel.openWorkspaceFile(path)
                                         viewModel.selectProjectPane(ProjectPane.FILES)
@@ -442,7 +442,9 @@ fun AgentScreen(
                 ForgeTextButton(onClick = viewModel::retryLastPrompt) { Text(stringResource(R.string.action_retry)) }
             }
         }
-        val chatQueue = state.queuedPrompts.filter { it.chatId == state.activeChatId }
+        val chatQueue = state.queuedPrompts.filter {
+            it.chatId == state.activeChatId && (it.projectId == null || it.projectId == state.activeProjectId)
+        }
         if (chatQueue.isNotEmpty()) {
             Column(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 2.dp),
@@ -570,6 +572,14 @@ fun AgentScreen(
             listening = voice.listening,
             micLevel = voice.level,
             onGenerateImage = { imageDialogOpen = true },
+            workspaceFiles = state.workspaceFiles,
+            readyAgents = state.readyAgents,
+            onExecuteSlashCommand = { cmd -> viewModel.sendPrompt(cmd) },
+            onSelectAgentTag = {
+                if (state.routing.mode == com.nextcraft.forge.model.RouteMode.SINGLE) {
+                    viewModel.setRouteMode(com.nextcraft.forge.model.RouteMode.MANUAL)
+                }
+            },
         )
         if (imageDialogOpen) ImageGenerationDialog(state = state, viewModel = viewModel, onDismiss = { imageDialogOpen = false })
     }

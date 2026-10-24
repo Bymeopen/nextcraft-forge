@@ -169,6 +169,8 @@ data class ForgeUiState(
     val runningChatIds: Set<String> = emptySet(),
     /** Active agent turn counts by project id across all projects. */
     val runningProjectChatCounts: Map<String, Int> = emptyMap(),
+    /** Live snapshot of all currently running agent turns across all projects (for the Dynamic Live Activity HUD). */
+    val liveAgentRuns: List<LiveAgentRunInfo> = emptyList(),
     /** Projects currently running an Android APK build. */
     val buildingProjectIds: Set<String> = emptySet(),
     /** Per-project Android build records so background project builds preserve their state. */
@@ -298,3 +300,14 @@ data class QueuedPrompt(
 
 /** A project removed from the list whose files are kept until the undo window (UNDO_WINDOW_MS) passes. */
 data class ProjectUndo(val projectId: String, val name: String)
+
+/** Snapshot of one active agent turn across any project/chat, displayed in the Dynamic Multi-Agent Live HUD. */
+data class LiveAgentRunInfo(
+    val projectId: String,
+    val projectName: String,
+    val chatId: String,
+    val chatTitle: String,
+    val agent: AgentKind,
+    val statusLine: UiText?,
+    val waitingApproval: Boolean = false,
+)

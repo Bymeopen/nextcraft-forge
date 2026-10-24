@@ -154,12 +154,12 @@ fun AndroidBuildScreen(
     val clipboard = LocalClipboardManager.current
 
     // Stage events carry only the active stage, so remember the last real one to place success/failure.
-    var lastRow by remember { mutableStateOf(-1) }
-    LaunchedEffect(build.stage, build.phase) {
+    var lastRow by remember(state.activeProjectId) { mutableStateOf(-1) }
+    LaunchedEffect(state.activeProjectId, build.stage, build.phase) {
         val index = stageRowIndex(build.stage)
         if (build.phase == AndroidBuildPhase.IDLE) lastRow = -1 else if (index >= 0) lastRow = index
     }
-    LaunchedEffect(build.phase) {
+    LaunchedEffect(state.activeProjectId, build.phase) {
         if (build.phase == AndroidBuildPhase.FAILED && build.issues.isNotEmpty()) activeTab = 1
     }
 
