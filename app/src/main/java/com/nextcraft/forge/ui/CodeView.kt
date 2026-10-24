@@ -122,7 +122,7 @@ internal fun DiffCodeView(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(6.dp))
                                 .background(tokens.dangerText.copy(alpha = 0.14f))
-                                .clickable { onRevertHunk?.invoke(line.hunkIndex) }
+                                .clickable(role = androidx.compose.ui.semantics.Role.Button) { onRevertHunk?.invoke(line.hunkIndex) }
                                 .padding(horizontal = 8.dp, vertical = 2.dp),
                         )
                     }

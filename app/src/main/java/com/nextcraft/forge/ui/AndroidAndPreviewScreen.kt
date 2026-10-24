@@ -917,7 +917,9 @@ private fun UiInspectorPanel(
                             maxLines = 2,
                         )
                     }
-                    OutlinedTextField(
+                    ForgeTextField(
+                        kind = ForgeFieldKind.TEXT,
+                        imeAction = ImeAction.Done,
                         value = instruction,
                         onValueChange = { instruction = it },
                         singleLine = true,
